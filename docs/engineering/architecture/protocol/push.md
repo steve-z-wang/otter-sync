@@ -32,7 +32,7 @@ Batch `n+1` is accepted only after `n`. Resending `n` returns the stored receipt
 
 - Unknown request fields survive a round trip and appear in the canonical bytes, which do not depend on field order; a request without `models` is refused. Evidence: [core/tests/contracts.rs](../../../../crates/core/tests/contracts.rs) `batch_envelope_keeps_unknown_data_in_canonical_bytes`.
 - The canonical receipt bytes are stable, a receipt round-trips, a page change converts to receipt authority without its cursor, and every case in [receipt-authority.json](../../../../fixtures/protocol/receipt-authority.json) decodes as declared: success without streams, all rejected, deletion, repeated record with one final result, and the refusals (duplicate record, duplicate or zero rejection ordinal, blank code, missing field, legacy checkpoint receipt, out-of-range counter, malformed identity or state). Evidence: `receipt_wire_round_trips_and_carries_authority_without_a_cursor`, `receipt_fixture_cases_decode_as_declared`.
-- The receipt a client stores equals the one the server stored, byte for byte. Evidence: [crates/sim/tests/push.rs](../../../../crates/sim/tests/push.rs) `receipts_round_trip`.
+- The receipt a client stores equals the one the server stored, byte for byte. Evidence: [crates/sim/tests/push.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/sim/tests/push.rs) `receipts_round_trip`.
 
 ## 11. Risks and Technical Debt
 

@@ -15,7 +15,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | `client.mutations.<name>`, `Call<Output>` | Accept a Mutation durably with its optimism; inspect `status` or await `wait()` for the final outcome | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
 | `tx.mutations.<name>(inputOrCallback)` | Queue a Mutation in a local transaction, with local-only changes that follow its backend outcome | [Queue Mutations in a transaction](frontend/client-api.md#queue-mutations-in-a-transaction) |
 | `client.queries.<name>` | Read an invocation snapshot with request-level boolean storage policy | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
-| `CallOutcome`, `CallError`, `CallOptions`, Dart `CallSuccess` / `CallFailure` | Read a durable outcome, handle failures and handle failures; Query/Fetch choose a boolean storage policy | [Storing Model results](frontend/client-api.md#storing-model-results) |
+| `CallOutcome`, `CallError`, `CallOptions`, Dart `CallSuccess` / `CallFailure` | Read a durable outcome, handle failures; Query/Fetch choose a boolean storage policy | [Storing Model results](frontend/client-api.md#storing-model-results) |
 | `client.bootstrap()` | Await finite marked-Model Bootstrap coverage | [Bootstrap](frontend/loads.md) |
 | `client.connection` | Pause, resume or wake background sync | [Connections](frontend/runtime.md#connection-controls) |
 | `client.syncState`, `client.close` | Inspect pending work and release resources | [Status and lifecycle](frontend/client-api.md#status-and-lifecycle) |
@@ -48,7 +48,6 @@ Use this index to find the interface you call or implement. Local Model examples
 | `rejections` (`watch`, `get`, `dismiss`), `failures` (`watch`, `retry`, `drop`), `outbound.watchPending`, `RefusedAct`, `FailedAct`, `FailedTask`, `SubmittedAct`, `ActOperation` | Watch and resolve refused calls, calls stuck on a failed prerequisite and the pending count, account-wide | [Unsent work](frontend/runtime.md#unsent-work) |
 | `tx.rejections.dismiss`, `tx.failures.retry`, `tx.failures.drop` | Resolve unsent work inside a transaction, atomically with a replacement call | [Repair inside a transaction](frontend/runtime.md#repair-inside-a-transaction) |
 | `open({ prerequisites })`, `PrerequisiteRetry`, `pendingTasks`, `setReadiness` | Complete prerequisite I/O before a durable call can be sent | [Prerequisites](frontend/runtime.md#prerequisites) |
-| `freeze`, `acknowledge`, `applyPull` | Exercise the engine protocol in tests and tooling | [Protocol primitives](frontend/runtime.md#protocol-primitives) |
 | `ReadPort`, `WritePort`, `LivePort`, `FetchPort`, `FetchOptions`, model factories and codecs | Bind generated facades to a compatible runtime | [Generated extension points](frontend/client-api.md#extension-points) |
 | `loaderHooks`, `Native` | Prepare a loader call or supply the native backend binding | [Backend extension points](backend/api.md#extension-points) |
 | Compiler command and `.model` declarations | Generate and evolve the interface contract | [Schema compiler](schema/reference.md) |

@@ -6,7 +6,7 @@
 Protocol 5 requires a fresh format-5 file. Another format is refused intact, including its WAL and SHM. Keep the old release and backend available while unresolved work is drained or exported using the old release under a separately owned recovery process. Opening a fresh file neither transfers nor abandons that work.
 
 
-Use a writable application directory and one active client per physical file. A Store binds backend, viewer, Stream and contract; changing credentials cannot change that binding. Normal close/reopen retains its incarnation and frozen request identities. Independently writable copies must not send the same queued calls.
+Use a writable application directory and one active client per physical file. A Store has a durable `storeId` and one bound Stream. Server admission binds it to an authenticated principal; requests identify the active Model materialization. Changing credentials cannot reuse it as another principal's Store. Normal close/reopen retains its incarnation and frozen request identities. Independently writable copies must not send the same queued calls.
 
 
 ## Change the schema

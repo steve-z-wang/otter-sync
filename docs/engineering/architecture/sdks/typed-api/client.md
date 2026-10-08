@@ -45,7 +45,7 @@ Language scopes refuse captured/expired capabilities and unawaited operations be
 ## 10. Quality Requirements
 
 - Bound files, lifecycle, requests, observations, cache and queues stay independent. Evidence: [native protocol tests](../../../../../crates/sqlite/tests), [RN binding tests](../../../../../integration/bindings/client-react-native) and [protocol transport verification](../../../testing/0.4.md).
-- Typed input and callback-before-input preserve local atomicity and independent Call fates. Evidence: [generated contract checks](../../../../../integration/action-contract), [Node native Mutation checks](../../../../../packages/client-js/mutation-native04.test.mjs) and [Dart package tests](../../../../../packages/dart/test).
+- Typed input and callback-before-input preserve local atomicity and independent Call fates. Evidence: [generated contract checks](../../../../../integration/action-contract), [Node native Mutation checks](../../../../../packages/client-js/mutation-native05.test.mjs) and [Dart package tests](../../../../../packages/dart/test).
 - Ordinary reads cannot overwrite current Stream protection; result snapshots remain independent. Evidence: [Fetch/once bindings](../../../../../integration/bindings/client-js) and [named-read E2E](../../../../../integration/load-e2e).
 - Installed generated APIs and bundled libraries work outside the checkout. Evidence: [installed-package runner](../../../../../integration/release/verify-installed.sh).
 

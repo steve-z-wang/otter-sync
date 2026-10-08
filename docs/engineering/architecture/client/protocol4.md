@@ -22,7 +22,7 @@ Each Delta unit commits its entire final projection, authority and proven prefix
 
 The downlink carrier owns one active frozen plan across live and HTTP arrivals. It finishes that plan before considering a different page; an overlapping or ahead range retains its validated head as catch-up demand and is fetched afresh from the committed cursor, without trimming its proof or waiting for another publication. Same-page replay still validates the frozen digest. Transport close, pause and retry retain the active plan; local unit failure releases carrier ownership so a smaller independent prefix can be requested without crossing the failed group.
 
-Real SQLite carrier regressions cover overlaps, failure recovery and lifecycle in [protocol04_downlink.rs](../../../../crates/sqlite/tests/protocol04_downlink.rs).
+Real SQLite carrier regressions cover overlaps, failure recovery and lifecycle in [protocol04_downlink.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/sqlite/tests/protocol04_downlink.rs).
 
 ## 5. Building block view
 

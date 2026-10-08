@@ -1,6 +1,8 @@
-# Common
+# Historical common carriers
 
-[Protocol 4](0.4.md) defines current bound contexts and carriers. Stamp and client batch-sequence descriptions below are retained protocol-3 fields.
+This page records protocol-4 encoding, limits and stamp/capability mechanics from v0.4.2. They are not current carrier requirements. [Protocol 5](0.5.md) owns current contexts, bounds and authority rules; shared value normalization remains in [Types](../schema/types.md).
+
+[Protocol 4](0.4.md) records historical bound contexts and carriers. Stamp and client batch-sequence descriptions below are retained protocol-3 fields.
 
 ## 1. Introduction and Goals
 

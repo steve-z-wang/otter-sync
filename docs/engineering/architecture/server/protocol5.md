@@ -6,7 +6,7 @@ The Batch path commits each named Mutation independently and resumes a fixed req
 
 ## 3. Context and Scope
 
-`BackendOptions.protocol5` supplies known current/retained read schemas, projection generation and `authorizeStream(principal, stream, tx)`. The server derives the read context through core's protocol-5 materialization helper. Authentication identifies the principal; authorization runs under the retained database transaction and publication fence, including replay.
+`BackendOptions.protocol5` supplies known current/retained read schemas, projection generation and `authorizeStream(principal, stream, tx)`. The server derives the read context through core's protocol-5 materialization helper. Authentication identifies the principal. Mutation admission/replay and finite authority planning authorize under their fenced Serializable transaction. Ordinary Query/Fetch validate the immutable Store binding and authorize without holding Store progress or the global publication fence across arbitrary Handler/Loader awaits. Explicit Query tracking acquires the fence in its Serializable read transaction.
 
 The SDK carries one validated immutable request through sequential `processBatchMember` native calls. Each call opens its own Serializable transaction. Rust validates the complete request, selects the trusted Mutation by name/version and normalizes its input. The caller's descriptor fingerprint is immutable intent bound by the Batch digest; it is not an equality gate against today's artifact. Compatible input widening or field reordering therefore does not refuse frozen work.
 
@@ -16,7 +16,7 @@ The SDK carries one validated immutable request through sequential `processBatch
 - [mutation_batch.rs](../../../../crates/server/src/mutation_batch.rs) owns Store admission, replay, per-member execution and outcome persistence.
 - [delivery_plan.rs](../../../../crates/server/src/delivery_plan.rs) freezes Bootstrap, repair and owned materialization and carries Query/Fetch snapshots.
 - [host.rs](../../../../crates/server/src/host.rs) defines strict `Protocol05Operation` requests, mirrored in [host-contract.mts](../../../../packages/server/host-contract.mts).
-- [persistence.mts](../../../../packages/postgres/src/persistence.mts) dispatches those operations through the shared pg/Prisma/Drizzle driver; [migration.sql](../../../../packages/postgres/migration.sql) adds Store, MutationResult and StreamRecord tables without removing legacy data.
+- [persistence.mts](../../../../packages/postgres/src/persistence.mts) dispatches those operations through the shared pg/Prisma/Drizzle driver; [migration.sql](../../../../packages/postgres/migration.sql) installs eight tables in a fresh framework namespace and refuses an existing legacy namespace unchanged.
 
 ## 6. Runtime View
 

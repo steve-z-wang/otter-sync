@@ -1,10 +1,10 @@
-# Loads
+# Historical Load declarations
 
-Load declarations and jobs belong to the retained 0.3 contract. New 0.4 contracts use concrete `@@bootstrap` Models and a Bootstrap handler, or named Queries and generated Fetch. See [the current schema reference](../../../../website/docs/schema/reference.md) and [client API](../sdks/typed-api/client.md).
+Load declarations and jobs belong to the retained 0.3 contract. Current protocol-5 contracts use concrete `@@bootstrap` Models and a Bootstrap handler, or named Queries and generated Fetch. See [the current schema reference](../../../../website/docs/schema/reference.md) and [client API](../sdks/typed-api/client.md).
 
 ## 1. Introduction and Goals
 
-A **Load** is a versioned, read-only backend operation that fills local Models in successive pages until the application backend reports completion ([#173](https://github.com/zanminwang/axton/issues/173)). It is the third native operation kind beside [Mutations and Queries](actions.md). A Query answers one request with a typed result; a Load is a durable job: the client runtime persists it, requests its pages, stores each page through Loader authority and `onStore`, and resumes it after reopen. It needs no Stream enrollment, though its Handler may add the records a page returns to Streams, and it does not replace [Bootstrap](../client/engine/pull.md#5-building-block-view).
+Historically, a **Load** was a versioned, read-only backend operation that fills local Models in successive pages until the application backend reports completion ([#173](https://github.com/zanminwang/axton/issues/173)). It is the third native operation kind beside [Mutations and Queries](actions.md). A Query answers one request with a typed result; a Load is a durable job: the client runtime persists it, requests its pages, stores each page through Loader authority and `onStore`, and resumes it after reopen. It needs no Stream enrollment, though its Handler may add the records a page returns to Streams, and it does not replace [Bootstrap](../client/engine/pull.md#5-building-block-view).
 
 This document owns the declaration, its output rules, versioning and names. The wire format is [Protocol / Loads](../protocol/loads.md), backend execution [Server / Engine / Loads](../server/engine/loads.md), the client job ledger and page application [Client / Engine / Loads](../client/engine/loads.md), scheduling the [Load worker](../client/connection/controller/load-worker.md), and the required behavior [guarantees N1–N8](../../guarantees.md#n-native-loads).
 

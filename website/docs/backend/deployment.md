@@ -4,7 +4,7 @@ This page describes the deployment configuration the current backend supports an
 
 ## What the listener is
 
-`backend.listen({ port, host? })` starts one Node HTTP server inside your application's process. It serves durable `POST /sync/mutations`, direct `POST /sync/actions`, `POST /sync/fetch`, `POST /sync/loads`, `POST /sync/pull` and the WebSocket upgrade on `/sync/live` on one port. Everything else answers `404`; other methods answer `405`.
+`backend.listen({ port, host? })` starts one Node HTTP server inside your application's process. It serves `POST /sync/handshake`, durable `POST /sync/mutations`, direct `POST /sync/actions`, `POST /sync/fetch`, `POST /sync/materialize`, `POST /sync/pull` and the WebSocket upgrade on `/sync/live` on one port. Everything else answers `404`; other methods answer `405`.
 
 | Property | Current behavior |
 | --- | --- |
@@ -30,7 +30,7 @@ flowchart LR
 
 The proxy must do three things:
 
-1. **Forward the POST routes** (`/sync/mutations`, `/sync/actions`, `/sync/fetch`, `/sync/loads` and `/sync/pull`) to the loopback listener unchanged, including the request body. The body limit is enforced by the backend; a stricter limit at the proxy is fine.
+1. **Forward the POST routes** (`/sync/handshake`, `/sync/mutations`, `/sync/actions`, `/sync/fetch`, `/sync/materialize` and `/sync/pull`) to the loopback listener unchanged, including the request body. The body limit is enforced by the backend; a stricter limit at the proxy is fine.
 2. **Pass the WebSocket upgrade through** on `/sync/live`. The upgrade is an HTTP `GET` with `Upgrade: websocket`; the proxy has to forward that request and then relay bytes in both directions until either side closes. Set the proxy's idle timeout for this route long enough for a quiet subscription: the backend sends nothing while no record changes.
 3. **Preserve the `Authorization` header** on every request and on the upgrade. Both SDKs send `Authorization: Bearer <token>`, and `authenticate` reads it from the forwarded request. A proxy that strips or replaces it makes every request `401` and refuses every upgrade. The same goes for any `headers` your clients send for [`admit`](api.md#admission), and for the `axton-admission` response header on the way back: without it a refusal is an ordinary error that clients retry.
 
@@ -52,19 +52,14 @@ Use your own token format and verify it in `authenticate`; `devAuth` trusts the 
 ## Trust boundaries
 
 - **Everything reaching the listener is trusted to have come through your proxy.** The runtime does not authenticate the proxy and does not read forwarded-for headers, so bind to loopback (or a private interface) and let the proxy be the only route in.
-- **Identity comes from `authenticate` alone.** The user id it returns is the owner used for every host operation in that request. A client identity is bound to the first owner that pushed with it; a push from another user with the same client id answers `403 client.owner_mismatch` ([Errors](api.md#errors)). Give each signed-in user their own local client database ([Authentication and account changes](../frontend/sync.md#accounts-and-cache-authority)).
-- **Authorization is application code.** Handlers decide what a user may write and loaders decide what a user may see, independently of stream; the runtime enforces no stream-level policy ([What your backend owns](api.md#what-your-backend-owns)).
+- **Identity comes from `authenticate` alone.** The user id it returns is the owner used for every host operation in that request. Admission binds the Store to its authenticated principal and Stream; a mismatched binding answers `403 store.binding` ([Errors](api.md#errors)). Give each signed-in user their own local client database ([Authentication and account changes](../frontend/sync.md#accounts-and-cache-authority)).
+- **Authorization is application code.** Required `protocol5.authorizeStream` decides whether the principal may use the bound Stream (`403 stream.forbidden`). Handlers decide what a user may write and Loaders decide what a user may see ([What your backend owns](api.md#what-your-backend-owns)).
 
-## What has been validated
+## Verification scope
 
-`integration/persistence/server/runtime.test.mjs` runs the real backend on loopback behind an in-process reverse proxy that forwards HTTP requests and passes the WebSocket upgrade through at the TCP level, with headers preserved. Through that proxy, a push answers `200`, a pull returns the pushed record, a live subscription is acknowledged and receives the page for a later push. The same test shows the header requirement: a proxy that strips `Authorization` gets `401` on HTTP and a refused upgrade.
+The maintained [protocol-5 host runner](https://github.com/zanminwang/axton/blob/main/integration/v05-sdk/run-host.sh) exercises generated SDKs against real loopback HTTP/WebSocket and PostgreSQL. It is not a reverse-proxy or TLS certificate. Historical v0.4.2 proxy evidence is in [runtime.test.mjs](https://github.com/zanminwang/axton/blob/v0.4.2/integration/persistence/server/runtime.test.mjs); it does not establish current protocol-5 proxy behavior.
 
-Not validated by the repository's tests, and therefore not claimed:
-
-- TLS termination and any specific proxy product (nginx, Caddy, cloud load balancers). The configuration above follows their documented WebSocket support; verify it in your environment.
-- Browsers. The client SDKs run on Node and Flutter; browser support is a separate decision.
-- More than one backend process behind the proxy. Live wakeups are process-local, so a client connected to one process does not learn about commits made through another until it pulls.
-
+Verify TLS termination, route allowlists, header forwarding and WebSocket timeouts in your deployed proxy. Browser support and multi-process wake delivery remain separate decisions. Process-local wakes do not notify sockets attached to another backend process until their next recovery request.
 
 ## Protocol 5 adoption
 

@@ -221,7 +221,7 @@ All controls return promise/future void. Pause/close cancel network activity tha
 
 ## Pending work and recovery
 
-`client.syncState()` returns `{ clientId, pending, beforeImages, cursors, streams, rejections, schema }`. `pending` counts queued work; `schema` is `{ rebuilt, pending, lastRebuild }` from the open-time schema check ([opening and schema changes](#opening-and-schema-changes)); `beforeImages` is a diagnostic count; `cursors` maps streams to received positions; `streams` lists desired subscriptions; `rejections` contains `{ ordinal, code }` entries. `client.models.<name>.syncState(identity)` returns one record's `{ pending, rejections }`: pending entries carry an ordinal, Mutation name, phase, prerequisite states and `diverged` when replay failed over newer authority. Both are local snapshots, not network probes.
+`client.syncState()` returns `{ clientId, pending, beforeImages, cursors, streams, rejections }`. `pending` counts queued work; `beforeImages` is a diagnostic count; `cursors` maps streams to received positions; `streams` describes the single bound Stream; `rejections` contains `{ ordinal, code }` entries. `client.models.<name>.syncState(identity)` returns one record's `{ pending, rejections }`: pending entries carry an ordinal, Mutation name, phase, prerequisite states and `diverged` when replay failed over newer authority. Both are local snapshots, not network probes.
 
 === "TypeScript"
 
@@ -397,4 +397,4 @@ A task that failed stays failed while any call waits on it. A call queued later 
 
 ## Protocol primitives
 
-The engine's protocol methods (`freeze`, `acknowledge`, `applyPull`, the last two returning reports for records they could not apply) are not part of the application surface; they exist on the runtime handle the framework's own tests use. Application synchronization is managed by `connect`. Wire fields are defined in the [protocol source](https://github.com/zanminwang/axton/blob/main/crates/core/src/protocol_v04.rs) and exercised by [shared wire fixtures](https://github.com/zanminwang/axton/blob/main/fixtures). Do not manufacture receipts, advance cursors yourself or rewrite frozen requests to recover from a network failure.
+The application SDK exposes no `freeze`, `acknowledge` or `applyPull` methods. Application synchronization is managed by the bound connection. Rust owns frozen Batches, acknowledgment and authority installation; wire fields are defined in the [protocol 5 source](https://github.com/zanminwang/axton/blob/main/crates/core/src/protocol_v05.rs) and exercised by [current carrier tests](https://github.com/zanminwang/axton/blob/main/crates/core/tests/protocol_v05.rs). Do not manufacture receipts, advance cursors yourself or rewrite frozen requests to recover from a network failure.

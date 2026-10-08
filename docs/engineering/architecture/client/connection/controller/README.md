@@ -2,7 +2,7 @@
 
 ## 1. Introduction and Goals
 
-The controller drives independent Uplink, direct read and finite delivery work while Storeworker serializes commits. It bounds admission and reserves repair capacity rather than accumulating unbounded live payload. Network and application callback waits hold no Store writer. Durable state determines which retry or transfer remains necessary after reconnect.
+The controller drives independent Uplink, direct read and finite delivery work while Storeworker serializes commits. It bounds admission and reserves repair capacity rather than accumulating unbounded live payload. Network waits hold no Store writer. An active local transaction owns its Store until its application callback finishes and commits or rolls back; independent Clients remain responsive. Durable state determines which retry or transfer remains necessary after reconnect.
 
 ## 5. Building Block View
 

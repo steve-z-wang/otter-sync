@@ -165,17 +165,17 @@ Failures reject with `CallError`:
 
 | `code` | Meaning |
 | --- | --- |
-| The Loader's `CallRejected` code, `loader.failed`, `loader.invalid`, `loader.unregistered`, `model_version_unsupported`, `call.identity_conflict` | The backend answered with this failure. `execution` is `rejected` |
+| The Loader's `CallRejected` code, `loader.failed`, `loader.invalid`, `loader.unregistered`, `model_version_unsupported` | The backend answered with this failure. `execution` is `rejected` |
 | `fetch.invalid_options` | An invalid identity or option, refused before any request |
 | `fetch.unavailable` | No connection, the connection was stopped before the response, or the client was closed while waiting |
 | `fetch.timeout` | The direct timeout passed |
 | `fetch.transport_failed` | The request or credential refresh failed; `cause` carries the message and the HTTP status, if any |
 | `fetch.invalid_response` | The response did not answer this request |
 | `fetch.store_failed` | The permitted local cache transaction failed; no content or progress from that transaction commits. |
-| `fetch.schema_pending` | The local database is waiting to be rebuilt for an incompatible schema change |
-| `fetch.schema_changed` | The local database was rebuilt while the call waited |
+| `fetch.schema_pending` | The Store is waiting for required schema rematerialization |
+| `fetch.schema_changed` | An explicit Store reset replaced the context while the call waited |
 
-A failure never deletes the local row. `execution` is `rejected` for the backend's codes, `fetch.invalid_options` and `fetch.schema_pending`, and `unknown` otherwise; a read has no side effects either way. A call on a client that is already closed rejects with the runtime's plain `client_closed` error (`Error` in TypeScript, `StateError` in Dart), not a `CallError`. A result the generated decoder cannot read rejects with `action.observation_failed`, as for a direct call.
+A failure never deletes the local row. `execution` is `rejected` for the backend's codes, `fetch.invalid_options`, and `unknown` otherwise; a read has no side effects either way. A call on a client that is already closed rejects with the runtime's plain `client_closed` error (`Error` in TypeScript, `StateError` in Dart), not a `CallError`. A result the generated decoder cannot read rejects with `action.observation_failed`, as for a direct call.
 
 ## Transactions
 

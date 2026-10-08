@@ -35,7 +35,7 @@ Errors: malformed requests and positions ahead of the head are `400 request.inva
 
 ## 10. Quality Requirements
 
-The shared [stream-membership fixture](../../../../fixtures/protocol/scope-membership.json) pins provenance, duplicate-pair refusal, safe counters, identity-only removal, authoritative-null and diagnostic distinctions, bootstrap and enrollment claims. Server delivery coverage lives in [stamp.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/stamp.rs), [bootstrap.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/bootstrap.rs) and [live.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/live.rs); client authority, retention and compatibility coverage lives in [stream_members.rs](../../../../crates/sqlite/tests/stream_members.rs). These are evidence locations, not a claim that final cross-runtime acceptance has run.
+The shared [stream-membership fixture](../../../../fixtures/protocol/scope-membership.json) pins provenance, duplicate-pair refusal, safe counters, identity-only removal, authoritative-null and diagnostic distinctions, bootstrap and enrollment claims. Server delivery coverage lives in [stamp.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/stamp.rs), [bootstrap.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/bootstrap.rs) and [live.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/live.rs); client authority, retention and compatibility coverage lives in [stream_members.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/sqlite/tests/stream_members.rs). These are evidence locations, not a claim that final cross-runtime acceptance has run.
 
 ## 11. Risks and Technical Debt
 

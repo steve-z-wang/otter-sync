@@ -2,7 +2,7 @@
 
 ## Protocol 5 configuration
 
-Set `protocol5` on backend options with `authorizeStream(principal, stream, tx)`. Authorization runs inside the retained transaction and publication fence, including replay. `projectionGeneration` defaults to `"1"`; configure the same generation on client and backend. A materialization identifies normalized Model read contracts, independently of credentials.
+Set `protocol5` on backend options with `authorizeStream(principal, stream, tx)`. Mutation admission/replay and finite authority planning authorize inside their fenced Serializable transaction. Ordinary Query/Fetch validate the immutable Store binding and authorize without holding Store progress or the global publication fence across arbitrary Handler/Loader awaits. Explicit Query tracking acquires the fence in its Serializable read transaction. `projectionGeneration` defaults to `"1"`; configure the same generation on client and backend. A materialization identifies normalized Model read contracts, independently of credentials.
 
 `materializations` maps supported prior materialization IDs to `{schema, projectionGeneration}` using the retained descriptor and Bootstrap selection. Preserve retained operation schemas while serving frozen Mutation retries.
 
@@ -49,14 +49,14 @@ The generated `Options<Tx>` requires:
 
 ## What your backend owns
 
-The Rust runtime processes the sync protocol and nothing else. The rules below are yours to implement; the runtime neither enforces nor checks them, and the schema does not make it do so.
+The Rust runtime processes the sync protocol and nothing else. Application code supplies Stream and business permission policies. Rust enforces the Store binding and calls the required Stream policy; schema declarations do not replace business authorization.
 
 | Rule | Who owns it | What the runtime does |
 | --- | --- | --- |
 | Authorization | Handlers decide what `userId` may write; loaders decide what `userId` may see and return `null` for the rest, whatever stream asked. | Authenticates the request and passes `userId` through. There is a trusted `authorizeStream` policy. |
 | Unique constraints and identities | Your database schema. `@@unique` and `@@id` are enforced on the client only; the client's local database refuses a violating write, but nothing checks the server. | Decodes identities and patches by shape. A duplicate that your database allows is stored. |
 | Child deletion | Your handler. `onTargetDelete: delete` is a client-side cascade: the client deletes the children locally, and those deletes never reach the server. A handler that deletes a parent must delete its children itself and touch them (`ctx.invalidate.todo(identity)`), leaving them in the Streams that delivered them so those Streams receive the deletion. | Reads the parent back as deleted and delivers it; a child the handler did not touch stays on other clients until a Stream delivers it. |
-| Client identity | Each signed-in user gets their own local client database. The Store is bound to stable backend, viewer, Stream and contract identity; a mismatch is refused, including on saved replay. | Stores the owner with the client row. |
+| Client identity | Each signed-in user gets their own local client database. Admission binds a Store to its authenticated principal and Stream; a mismatch is refused, including on saved replay. | Persists the binding in the Store row. |
 | Backend language | TypeScript on Node, through the generated `createBackend`. The Dart package is a client SDK; there is no Dart or Rust-hosted backend. | Runs the same Rust engine inside the Node addon. |
 | Prerequisite expressions | `@requires(Name(field: self))` is the only supported form: every argument is `self`, the value of the annotated field. The runner that satisfies prerequisites is client code. | Never sees prerequisites; they gate when the client sends a durable call, not what the backend receives. |
 
@@ -232,9 +232,9 @@ await backend.transaction(async ctx => {
 | --- | --- |
 | `ctx.stream` | Callback-bound initiating Stream on Mutation, Query and Bootstrap contexts. |
 | `ctx.streams(names)` | Explicit readonly list of Streams. Background contexts only expose this form. Names are nonblank and case-sensitive. |
-| `stream.track.todo(identityOrList)`, `stream.track(referenceOrList)` | `void`; establishes durable unique Stream/Model/Identity pairs. A first pair gets one upsert at current authority, initializing a missing canonical position. Repeating a pair moves neither canonical position nor Stream cursor. |
-| `ctx.invalidate.todo(identityOrList)`, `ctx.invalidate(referenceOrList)` | `void`; advances each distinct identity's canonical publication position once and notifies every finally tracking Stream. An identity without holders still advances. |
-| `stream.invalidate.todo(identityOrList)`, `stream.invalidate(referenceOrList)` | `void`; advances each identity's canonical publication position once, notifying only the selected names that already track it. Never enrolls. |
+| `stream.track.todo(identityOrList)`, `stream.track(referenceOrList)` | `void`; establishes durable unique Stream/Model/Identity pairs. A first pair receives the transaction's affected-Stream cursor. Repeating a live pair retains its cursor. |
+| `ctx.invalidate.todo(identityOrList)`, `ctx.invalidate(referenceOrList)` | `void`; updates each identity's existing holders at the transaction's affected-Stream cursor. With no holders it enrolls nobody and advances no Stream. |
+| `stream.invalidate.todo(identityOrList)`, `stream.invalidate(referenceOrList)` | `void`; updates only selected existing holders at the transaction's affected-Stream cursor. Never enrolls. |
 
 Generated Model methods accept scalar or complete object identities for a single-field identity, complete objects for composite identities, and one identity or a readonly list. Mixed calls require generated `RecordRef` constructors that identify the Model. Models without a viewer Loader cannot be declared.
 
@@ -297,10 +297,12 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 | Code | HTTP status | Meaning |
 | --- | --- | --- |
 | (your `admit` refusal) | Your status, with `axton-admission: refused` | Your JSON body ([Admission](#admission)) |
-| `protocol.unsupported` | 426 | Missing or unsupported `stream-authority-v1`; refused before handler or progress effects |
+| `protocol.unsupported` | 426 | Unsupported numeric protocol discriminator; refused before handler or progress effects |
 | `request.invalid` | 400 | Malformed body, or a pull cursor ahead of the stream head |
-| `client.owner_mismatch` | 403 | The client identity belongs to another user |
-| `gap`, `overlap` | 409 | The batch sequence is not the next one and not a retry of the last |
+| `store.binding` | 403 | The Store belongs to another principal or Stream |
+| `stream.forbidden` | 403 | Required Stream authorization refused the principal |
+| `batch.sequence`, `batch.conflict`, `batch.progress` | 409 | Invalid Batch sequence, immutable intent or retained progress |
+| `page.capacity`, `constraint_group_capacity` | 413 | A required finite authority unit exceeds its capacity bound |
 | `model_version_unsupported` | 409 | Pull and live subscribe: a Model read contract this backend does not serve. During a call it is a per-call failure. |
 | `handler.invalid` | 500 `{ code: "server" }` | The handler's settlement could not be used: an invalid rejection code, or a change or membership naming a record without a model or an object identity |
 | anything else | 500 `{ code: "server" }` | A server-side failure; the `EngineError` or thrown error goes to `onError` |
@@ -325,7 +327,7 @@ Generated clients use all of these routes automatically from one bound `connecti
 
 ## Background writes
 
-Writes outside handlers have no readback and no receipt; they reach clients only through Streams. Run them through `backend.transaction`: the framework opens the application transaction and hands the body the same `invalidate` and `stream` a Mutation handler receives. When the body returns, the framework allocates publication positions for explicitly invalidated records and applies the membership changes and deliveries inside that same transaction; once it commits, the live subscribers of the affected Streams are woken.
+Writes outside handlers have no readback and no receipt; they reach clients only through Streams. Run them through `backend.transaction`: the framework opens the application transaction and hands the body the same `invalidate` and `stream` a Mutation handler receives. When the body returns, the framework reserves one cursor per affected Stream and settles explicit tracking and existing-holder invalidation inside that same transaction; once it commits, the live subscribers of the affected Streams are woken.
 
 ```ts
 await backend.transaction(async ({ tx, streams, invalidate }) => {
@@ -343,7 +345,7 @@ await backend.transaction(async ({ tx, streams, invalidate }) => {
 | `invalidate` | `invalidate.entry(identity)` declares a changed record; publishes its current canonical state when the body returns |
 | `streams(names)` | The same Stream handle as in a handler, for tracking records and selected invalidation |
 
-Same rules as a Mutation handler's, with two differences: there are no Model inputs, because nothing was uploaded, and nothing is read back, because no client is waiting for a receipt. Tracking an unchanged record is idempotent; invalidation advances the canonical publication position. Wakeups are process-local; distributed wake delivery needs additional application infrastructure.
+Same rules as a Mutation handler's, with two differences: there are no Model inputs, because nothing was uploaded, and nothing is read back, because no client is waiting for a receipt. Tracking an unchanged record is idempotent; invalidation updates existing holders using the transaction's affected-Stream cursor. Wakeups are process-local; distributed wake delivery needs additional application infrastructure.
 
 ### In a transaction you own
 
@@ -357,13 +359,13 @@ const wake = await db.$transaction(async (tx) => {
     invalidate.entry({ id: 'entry-1' });
     streams(['book:demo']).track.entry({ id: 'entry-1' });
   });
-});
+}, { isolationLevel: "Serializable" });
 wake();
 ```
 
 | Behavior | Contract |
 | --- | --- |
-| Settlement | Runs before `publish` resolves: canonical positions, memberships and Stream positions are written through `tx`, so they commit or roll back with it, a savepoint included. Each call is its own settlement, so a record touched in two calls gets two publication positions |
+| Settlement | Runs before `publish` resolves: tracking and Stream positions are written through `tx`, so they commit or roll back with it, a savepoint included. Repeated publication calls reuse one cursor per affected Stream in that SQL transaction; records have no independent publication stamp |
 | Wake | `publish` resolves to a function. Call it after `tx` commits; after a rollback, drop it. Until it is called, no live subscriber is told; they catch up on their next wake or reconnect |
 | Errors | A refused declaration or a database error rejects `publish` with the original error, so your retry loop can recognize a serialization failure and run the whole transaction again. Wakes from failed attempts are simply never called |
 | Isolation | AXTON does not choose the level of your transaction. Use Serializable isolation and acquire the persisted publication fence before relevant application work. Retry the entire transaction on a serialization conflict; a later publication call cannot repair an earlier stale snapshot |
@@ -371,8 +373,8 @@ wake();
 
 ## Extension points
 
-`loaderHooks` maps model names to `{ prepareForViewer(call): Promise<void> }`. The hook runs before that model's loader in the same request context. Its failure fails the affected read. The typed call provides `call.streams([...])` and `call.invalidate` for preparation publications; acquisition happens before preparation. Use it only if viewer-specific preparation is needed; a loader already receives the user.
+`loaderHooks` maps model names to `{ prepareForViewer(call): Promise<void> }`. The hook runs before that model's loader in the same request context. Its failure fails the affected read. The typed call provides `call.streams([...])` and `call.invalidate` for preparation publications; explicit preparation publications use the same transaction and cursor reservations. Use it only if viewer-specific preparation is needed; a loader already receives the user.
 
-`native?: Native` injects the native bridge when packaging it elsewhere. It implements `validateConfig`, `processPush`, `processPull`, `settleExternal`, `negotiateLive` and `pullLive` with the string/JSON callback contracts in the [SDK source](https://github.com/zanminwang/axton/blob/main/packages/server/index.mts). The default binding comes from this repository's Node addon. This is a packaging seam; the generated Mutations, Queries and Loaders remain the application contract.
+`native?: Native` injects the native bridge when packaging it elsewhere. Its current entrypoints include `validateConfig`, `handshake05`, `validateMutationBatch`, `processBatchMember`, `encodeBatchAcknowledgement`, `processRead05`, `processDelivery05`, `processMaterialization05`, `processLive05` and `settleExternal05`; `negotiateLive`, `liveEvent` and `liveClose` manage the native socket session with the string/JSON callback contracts in the [SDK source](https://github.com/zanminwang/axton/blob/main/packages/server/index.mts). The default binding comes from this repository's Node addon. This is a packaging seam; the generated Mutations, Queries and Loaders remain the application contract.
 
-Backend methods marked `@internal` (`push`, `pull`, `negotiateLive`, `pullLive`, `onCommitted`, `notifyCommitted`, `closeLive`) are used by the listener and tests. They are not the supported application-facing HTTP integration surface.
+Backend methods marked `@internal` are used by the listener and tests. They are not the supported application-facing HTTP integration surface.

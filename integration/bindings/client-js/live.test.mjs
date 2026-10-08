@@ -451,9 +451,9 @@ test("pause prevents a late HTTP credential from starting its canceled recovery 
       ...n.config,
       token: () => (block ? (called.resolve(), token.promise) : "secret"),
     });
-    await until(() => n.handshakes.length === 1);
+    await f.client.bootstrap();
+    await until(() => n.handshakes.length === 1 && n.handshakes[0].context);
     await c.pause();
-    n.state.head = 1;
     await c.resume();
     await until(() => n.handshakes.length === 2);
     block = true;
@@ -461,6 +461,7 @@ test("pause prevents a late HTTP credential from starting its canceled recovery 
       .at(-1)
       .send(JSON.stringify(page(n.handshakes.at(-1).context, 2, 3, "gap")));
     await timeout(called.promise);
+    assert.equal(deltas(n).length, 0);
     const before = n.requests.length;
     await c.pause();
     token.resolve("late");

@@ -286,3 +286,87 @@ fn repeated_clean_direct_updates_retain_one_patch_and_authority_clears_it() {
     drop(c);
     assert_eq!(open(&path).read(&key()).unwrap().unwrap()["text"], "server");
 }
+
+#[test]
+fn direct_writes_survive_refusal_but_newer_authority_retires_them_before_or_after_refusal() {
+    for order in ["before", "after", "after-companion"] {
+        for authority_before_refusal in [false, true] {
+            let d = tempfile::tempdir().unwrap();
+            let path = d.path().join("db");
+            let mut c = open(&path);
+            c.initialize_stream05(0).unwrap();
+            stream(&mut c, 1, Some("A"));
+            if order == "before" {
+                c.transaction(|tx| tx.direct(op(OperationKind::Update, Some("direct"))))
+                    .unwrap();
+            }
+            c.transaction(|tx| {
+                tx.submit_mutation05(
+                    "Edit",
+                    1,
+                    json!({"entry":{"id":"e","text":"optimistic"}}),
+                    if order == "after-companion" {
+                        vec![op(OperationKind::Update, Some("companion"))]
+                    } else {
+                        vec![]
+                    },
+                )
+            })
+            .unwrap();
+            if order != "before" {
+                c.transaction(|tx| tx.direct(op(OperationKind::Update, Some("direct"))))
+                    .unwrap();
+            }
+            assert_eq!(c.pending_count().unwrap(), 1, "direct is never queued");
+            if authority_before_refusal {
+                stream(&mut c, 2, Some("new authority"));
+            }
+            let batch = c.freeze_batch05().unwrap().unwrap();
+            c.acknowledge_batch05(&v05::BatchAcknowledgement {
+                context: batch.context,
+                batch_id: batch.batch_id,
+                digest: batch.digest,
+                results: vec![v05::MutationResult {
+                    mutation_id: batch.mutations[0].id,
+                    outcome: v05::MutationOutcome::Rejected {
+                        code: "edit.denied".into(),
+                        message: None,
+                    },
+                }],
+            })
+            .unwrap();
+            assert_eq!(c.pending_count().unwrap(), 0);
+            assert_eq!(
+                c.read(&key()).unwrap().unwrap()["text"],
+                if authority_before_refusal {
+                    "new authority"
+                } else {
+                    "direct"
+                },
+                "{order}/{authority_before_refusal}"
+            );
+            drop(c);
+            let mut c = open(&path);
+            assert_eq!(
+                c.read(&key()).unwrap().unwrap()["text"],
+                if authority_before_refusal {
+                    "new authority"
+                } else {
+                    "direct"
+                }
+            );
+            stream(&mut c, 3, Some("later authority"));
+            assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "later authority");
+            assert!(
+                c.read_sql("SELECT * FROM axton_local_replica_layer", &[])
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                c.read_sql("SELECT * FROM axton_local_write", &[])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+}

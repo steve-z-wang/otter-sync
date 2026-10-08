@@ -24,7 +24,10 @@ fn schema() -> Schema {
     s["actions"] = json!([
  {"name":"Hold","version":1,"inputs":[{"kind":"model","name":"book","model":"Book","operation":"update","cardinality":"single","fields":["title"]}],"outputs":[]},
  {"name":"EditComment","version":1,"inputs":[{"kind":"model","name":"comment","model":"Comment","operation":"update","cardinality":"single","fields":["text"]}],"outputs":[]},
- {"name":"Ping","version":1,"inputs":[],"outputs":[]}]);
+ {"name":"Ping","version":1,"inputs":[],"outputs":[]},
+ {"name":"Replace","version":1,"inputs":[{"kind":"model","name":"removed","model":"Book","operation":"delete","cardinality":"single"},{"kind":"model","name":"book","model":"Book","operation":"create","cardinality":"single"},{"kind":"model","name":"comment","model":"Comment","operation":"create","cardinality":"single"}],"outputs":[]},
+ {"name":"DeleteWithHold","version":1,"inputs":[{"kind":"model","name":"removed","model":"Book","operation":"delete","cardinality":"single"},{"kind":"model","name":"held","model":"Book","operation":"update","cardinality":"single","fields":["title"]}],"outputs":[]},
+ {"name":"CreateBook","version":1,"inputs":[{"kind":"model","name":"book","model":"Book","operation":"create","cardinality":"single"}],"outputs":[]}]);
     Schema::from_value(s).unwrap()
 }
 fn start(path: &std::path::Path) -> Client<SqliteStore> {
@@ -174,4 +177,71 @@ fn a_companion_cascade_keeps_its_place_before_later_companions_of_the_same_call(
         assert_eq!(c.pending_count().unwrap(), 0);
         assert_eq!(c.before_image_count().unwrap(), 0);
     }
+}
+
+#[test]
+fn a_wire_cascade_keeps_its_place_before_later_operations_of_the_same_call() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let mut c = start(&path);
+    c.transaction(|tx| {
+        tx.submit_mutation05(
+            "EditComment",
+            1,
+            json!({"comment":{"id":"c","text":"E"}}),
+            vec![],
+        )
+    })
+    .unwrap();
+    c.transaction(|tx|tx.submit_mutation05("Replace",1,json!({"removed":{"id":"b"},"book":{"id":"b","title":"B2"},"comment":{"id":"c","bookId":"b","text":"C2"}}),vec![])).unwrap();
+    settle(&mut c, false, false);
+    assert_eq!(c.read(&key("Comment", "c")).unwrap().unwrap()["text"], "C2");
+    assert_eq!(c.read(&key("Book", "b")).unwrap().unwrap()["title"], "B2");
+    drop(c);
+    let mut c = Client::open05(SqliteStore::open(&path).unwrap(), schema(), "User:u").unwrap();
+    assert_eq!(c.read(&key("Comment", "c")).unwrap().unwrap()["text"], "C2");
+}
+#[test]
+fn a_pending_wire_delete_still_hides_a_delivered_child_of_a_parent_recreated_by_a_later_call() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let mut c = start(&path);
+    c.transaction(|tx| {
+        tx.submit_mutation05(
+            "DeleteWithHold",
+            1,
+            json!({"removed":{"id":"b"},"held":{"id":"other","title":"hold"}}),
+            vec![],
+        )?;
+        tx.submit_mutation05(
+            "CreateBook",
+            1,
+            json!({"book":{"id":"b","title":"B2"}}),
+            vec![],
+        )
+    })
+    .unwrap();
+    assert_eq!(c.read(&key("Book", "b")).unwrap().unwrap()["title"], "B2");
+    let context = c.request_context05().unwrap();
+    c.install_authority05(
+        &context,
+        &[v05::AuthorityChange::Record {
+            key: v05::RecordKey {
+                model: "Comment".into(),
+                identity: json!({"id":"x"}),
+            },
+            cursor: 1,
+            state: json!({"bookId":"b","text":"X"}),
+        }],
+        None,
+    )
+    .unwrap();
+    assert!(
+        c.read(&key("Comment", "x")).unwrap().is_none(),
+        "pending delete extends to delivered child despite later queued parent recreation"
+    );
+    drop(c);
+    let mut c = Client::open05(SqliteStore::open(&path).unwrap(), schema(), "User:u").unwrap();
+    assert!(c.read(&key("Comment", "x")).unwrap().is_none());
+    assert_eq!(c.read(&key("Book", "b")).unwrap().unwrap()["title"], "B2");
 }

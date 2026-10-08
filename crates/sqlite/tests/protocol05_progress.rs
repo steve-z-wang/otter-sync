@@ -117,3 +117,52 @@ fn unique_transfer_is_final_projection_atomic_and_ahead_content_does_not_advance
     assert_eq!(c.store_status05().unwrap().cursor, Some(3));
     assert_eq!(c.read(&key("y")).unwrap().unwrap()["text"], "alpha");
 }
+
+#[test]
+fn bootstrap_unique_release_closes_cached_conflict_in_one_current_atomic_unit() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let mut c = Client::open05(SqliteStore::open(&path).unwrap(), schema(), "User:u").unwrap();
+    c.initialize_stream05(40).unwrap();
+    c.install_cache05(
+        &[
+            v05::ReadRecord {
+                key: v05::RecordKey {
+                    model: "Entry".into(),
+                    identity: json!({"id":"a"}),
+                },
+                cursor: (),
+                state: json!({"text":"x","note":null}),
+            },
+            v05::ReadRecord {
+                key: v05::RecordKey {
+                    model: "Entry".into(),
+                    identity: json!({"id":"b"}),
+                },
+                cursor: (),
+                state: json!({"text":"y","note":null}),
+            },
+        ],
+        true,
+    )
+    .unwrap();
+    let mut q = DeliveryQueue::new(100_000, 8);
+    receive(
+        &mut c,
+        &mut q,
+        "boot",
+        0,
+        40,
+        40,
+        vec![change("b", 40, "x"), change("a", 30, "z")],
+    );
+    c.apply_next_delivery05(&mut q, 1).unwrap();
+    assert_eq!(c.read(&key("a")).unwrap().unwrap()["text"], "z");
+    assert_eq!(c.read(&key("b")).unwrap().unwrap()["text"], "x");
+    assert_eq!(c.store_status05().unwrap().cursor, Some(40));
+    drop(c);
+    let mut c = Client::open05(SqliteStore::open(&path).unwrap(), schema(), "User:u").unwrap();
+    assert_eq!(c.read(&key("a")).unwrap().unwrap()["text"], "z");
+    assert_eq!(c.read(&key("b")).unwrap().unwrap()["text"], "x");
+    assert_eq!(c.store_status05().unwrap().cursor, Some(40));
+}

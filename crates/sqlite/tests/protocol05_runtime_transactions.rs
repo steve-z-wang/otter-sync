@@ -838,6 +838,9 @@ fn a_local_callback_admits_only_its_own_local_commands() {
             "scope",
             json!({"kind":"stream","stream":"book","subscribed":true}),
         ),
+        ("discard", json!({"kind":"discard","ordinal":1})),
+        ("dismiss", json!({"kind":"dismiss","ordinal":1})),
+        ("retry", json!({"kind":"retryTasks","keys":[]})),
         ("savepoint", json!({"kind":"savepoint"})),
         ("release", json!({"kind":"release"})),
     ];
@@ -1342,4 +1345,395 @@ enum LocalStep {
     Callback,
     OuterWrite,
     Commit,
+}
+
+fn recovery_schema() -> Schema {
+    let mut raw = serde_json::to_value(mutation_schema(Value::Null)).unwrap();
+    raw["actions"].as_array_mut().unwrap().push(json!({"name":"Edit","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single","fields":["text"]}],"outputs":[]}));
+    raw["prerequisites"] = json!([{"name":"Media","fields":[{"name":"key","type":"String"}]}]);
+    raw["requirements"] =
+        json!([{"model":"Entry","field":"note","name":"Media","arguments":{"key":"self"}}]);
+    Schema::from_value(raw).unwrap()
+}
+fn recovery_harness() -> (
+    Harness<FailingCommit>,
+    Arc<AtomicBool>,
+    SubmittedCall,
+    SubmittedCall,
+    SubmittedCall,
+    String,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let mut c = Client::open05(
+        FailingCommit {
+            inner: SqliteStore::open(dir.path().join("db")).unwrap(),
+            armed: armed.clone(),
+        },
+        recovery_schema(),
+        "User:u",
+    )
+    .unwrap();
+    c.initialize_stream05(0).unwrap();
+    let owner = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Publish",
+                1,
+                json!({"entry":{"id":"e","text":"draft","note":"asset"}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let child = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Edit",
+                1,
+                json!({"entry":{"id":"e","text":"edited"}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let refused = c
+        .transaction(|tx| tx.submit_mutation05("Ping", 1, json!({}), vec![]))
+        .unwrap();
+    let b = c.freeze_batch05().unwrap().unwrap();
+    assert_eq!(b.mutations.len(), 1);
+    c.acknowledge_batch05(&v05::BatchAcknowledgement {
+        context: b.context,
+        batch_id: b.batch_id,
+        digest: b.digest,
+        results: vec![v05::MutationResult {
+            mutation_id: refused.ordinal,
+            outcome: v05::MutationOutcome::Rejected {
+                code: "ping.denied".into(),
+                message: None,
+            },
+        }],
+    })
+    .unwrap();
+    let task = c.pending_tasks().unwrap().remove(0)["key"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    c.outcome(&task, Some("file is gone")).unwrap();
+    let runtime = ClientRuntime::new(c)
+        .register_prerequisite_handlers(vec!["Media".into()])
+        .unwrap();
+    (
+        Harness { runtime, _dir: dir },
+        armed,
+        owner,
+        child,
+        refused,
+        task,
+    )
+}
+fn unsent_events(events: &[Value]) -> Vec<Value> {
+    events
+        .iter()
+        .filter(|e| e["type"] == "observerChanged")
+        .cloned()
+        .collect()
+}
+fn resolution_events(events: &[Value]) -> Vec<Value> {
+    events
+        .iter()
+        .filter(|e| e["type"] == "callCompleted" || e["operation"]["kind"] == "prerequisite")
+        .cloned()
+        .collect()
+}
+fn observe_recovery<S: ClientStore + 'static>(h: &mut Harness<S>) -> Vec<String> {
+    let mut ids = vec![];
+    for view in ["pending", "failures", "rejections"] {
+        let (completed, events) = h.call(
+            &format!("watch-{view}"),
+            json!({"kind":"unsentWatch","view":view}),
+        );
+        let id = completed["value"]["observerId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            events[0], completed,
+            "registration completion precedes first snapshot"
+        );
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[1]["observerId"], id);
+        ids.push(id);
+    }
+    ids
+}
+#[test]
+fn unsent_observers_publish_initial_then_changed_inputs_and_end_on_unwatch_or_close() {
+    let (mut h, _armed, owner, child, refused, _key) = recovery_harness();
+    let ids = observe_recovery(&mut h);
+    assert_eq!(
+        h.runtime.client().failed_acts().unwrap()[0].act.args,
+        Some(json!({"entry":{"id":"e","text":"draft","note":"asset"}}))
+    );
+    assert_eq!(
+        h.runtime.client().refused_acts05().unwrap()[0].id,
+        refused.ordinal
+    );
+    let (_, events) = h.call("unrelated", create("unrelated", "local"));
+    assert!(
+        unsent_events(&events).is_empty(),
+        "unchanged views publish no duplicate"
+    );
+    let (_, events) = h.call("discard", json!({"kind":"discard","ordinal":owner.ordinal}));
+    let completions = resolution_events(&events);
+    assert_eq!(completions.len(), 2, "{events:?}");
+    assert!(completions.iter().any(|e| e["callId"] == owner.call_id));
+    assert!(completions.iter().any(|e| e["callId"] == child.call_id));
+    assert_eq!(
+        unsent_events(&events).len(),
+        3,
+        "pending/failures/refusals all changed"
+    );
+    let rejections = unsent_events(&events)
+        .into_iter()
+        .find(|e| e["snapshot"]["kind"] == "rejections")
+        .unwrap();
+    assert_eq!(
+        rejections["snapshot"]["items"][0]["act"]["args"],
+        json!({"entry":{"id":"e","text":"edited"}})
+    );
+    h.call("unwatch", json!({"kind":"unwatch","observerId":ids[2]}));
+    let (_, events) = h.call("dismiss", json!({"kind":"dismiss","ordinal":child.ordinal}));
+    assert!(
+        unsent_events(&events).is_empty(),
+        "unwatched refusal stream stops"
+    );
+    h.submit(json!({"type":"close"})).unwrap();
+    let events = h.run();
+    let terminal = unsent_events(&events);
+    assert_eq!(terminal.len(), 2);
+    assert!(terminal.iter().all(|e| e["snapshot"]["closed"] == true));
+    assert_eq!(events.last().unwrap()["type"], "runtimeClosed");
+}
+#[test]
+fn transactional_discard_and_dismiss_change_local_reads_but_announce_only_after_commit() {
+    let (mut h, _armed, owner, child, refused, _key) = recovery_harness();
+    observe_recovery(&mut h);
+    let open = h.begin("tx-discard");
+    h.command(
+        "discard",
+        &open.transaction,
+        None,
+        json!({"kind":"discard","ordinal":owner.ordinal}),
+    );
+    h.command(
+        "dismiss",
+        &open.transaction,
+        None,
+        json!({"kind":"dismiss","ordinal":refused.ordinal}),
+    );
+    h.command("local-read", &open.transaction, None, read("e"));
+    let events = h.run();
+    assert!(resolution_events(&events).is_empty());
+    assert!(unsent_events(&events).is_empty());
+    assert_eq!(events.last().unwrap(), &done("local-read", Value::Null));
+    assert!(
+        h.entry("e").is_some(),
+        "committed reader keeps old optimism"
+    );
+    assert!(
+        h.runtime
+            .client()
+            .call_completion05(&owner.call_id)
+            .unwrap()
+            .is_none()
+    );
+    h.callback(&open, true, None);
+    let events = h.run();
+    assert_eq!(resolution_events(&events).len(), 2, "{events:?}");
+    assert_eq!(unsent_events(&events).len(), 3);
+    assert_eq!(h.entry("e"), None);
+    assert_eq!(
+        h.runtime
+            .client()
+            .refused_acts05()
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>(),
+        vec![child.ordinal]
+    );
+    assert!(
+        h.runtime
+            .client()
+            .call_completion05(&owner.call_id)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        h.runtime
+            .client()
+            .call_completion05(&child.call_id)
+            .unwrap()
+            .is_some()
+    );
+}
+#[test]
+fn transactional_retry_changes_task_reads_but_handler_starts_only_after_commit() {
+    let (mut h, _armed, _owner, _child, _refused, key) = recovery_harness();
+    observe_recovery(&mut h);
+    let open = h.begin("tx-retry");
+    h.command(
+        "retry",
+        &open.transaction,
+        None,
+        json!({"kind":"retryTasks","keys":[key]}),
+    );
+    h.command("local-task",&open.transaction,None,json!({"kind":"sql","sql":"SELECT error FROM axton_mutation_prerequisite WHERE key=?","parameters":[key]}));
+    let events = h.run();
+    assert!(resolution_events(&events).is_empty());
+    assert!(unsent_events(&events).is_empty());
+    assert_eq!(events.last().unwrap()["value"][0]["error"], Value::Null);
+    assert_eq!(
+        h.runtime.client().pending_tasks().unwrap()[0]["state"],
+        "failed"
+    );
+    h.callback(&open, true, None);
+    let events = h.run();
+    let effects = resolution_events(&events);
+    assert_eq!(effects.len(), 1, "{events:?}");
+    assert_eq!(effects[0]["operation"]["kind"], "prerequisite");
+    assert_eq!(effects[0]["operation"]["arguments"], json!({"key":"asset"}));
+    assert_eq!(
+        unsent_events(&events).len(),
+        1,
+        "failed-input view clears after commit"
+    );
+    h.submit(json!({"type":"effectResult","effectId":effects[0]["effectId"],"outcome":{"ok":false,"error":{"message":"missing asset","retry":false}}})).unwrap();
+    let failed = h.run();
+    assert!(
+        resolution_events(&failed).is_empty(),
+        "terminal failure does not retry"
+    );
+    let changed = unsent_events(&failed);
+    assert_eq!(changed.len(), 1, "{failed:?}");
+    assert_eq!(
+        changed[0]["snapshot"]["items"][0]["act"]["args"],
+        json!({"entry":{"id":"e","text":"draft","note":"asset"}})
+    );
+    assert_eq!(
+        changed[0]["snapshot"]["items"][0]["tasks"][0]["error"],
+        "missing asset"
+    );
+    let (_, events) = h.call("retry-again", json!({"kind":"retryTasks","keys":[key]}));
+    assert_eq!(
+        resolution_events(&events).len(),
+        1,
+        "explicit retry runs handler again"
+    );
+    assert_eq!(
+        unsent_events(&events).len(),
+        1,
+        "failure snapshot clears after committed retry"
+    );
+}
+#[test]
+fn unsent_resolutions_roll_back_at_savepoint_outer_failure_failed_commit_and_priority_close() {
+    for mode in ["savepoint", "rollback", "failed-commit", "close"] {
+        let (mut h, armed, owner, child, refused, key) = recovery_harness();
+        observe_recovery(&mut h);
+        let original = h.recovery_state();
+        let open = h.begin("resolution-tx");
+        let scope = if mode == "savepoint" {
+            h.command(
+                "savepoint",
+                &open.transaction,
+                None,
+                json!({"kind":"savepoint"}),
+            );
+            Some(h.run()[0]["value"]["scope"].as_str().unwrap().to_owned())
+        } else {
+            None
+        };
+        h.command(
+            "retry",
+            &open.transaction,
+            scope.as_deref(),
+            json!({"kind":"retryTasks","keys":[key]}),
+        );
+        h.command(
+            "discard",
+            &open.transaction,
+            scope.as_deref(),
+            json!({"kind":"discard","ordinal":owner.ordinal}),
+        );
+        h.command(
+            "dismiss",
+            &open.transaction,
+            scope.as_deref(),
+            json!({"kind":"dismiss","ordinal":refused.ordinal}),
+        );
+        let events = h.run();
+        assert!(
+            events
+                .iter()
+                .all(|e| e["type"] == "taskCompleted" && e["ok"] == true),
+            "{mode}: {events:?}"
+        );
+        let events = match mode {
+            "savepoint" => {
+                h.command(
+                    "undo",
+                    &open.transaction,
+                    scope.as_deref(),
+                    json!({"kind":"rollbackSavepoint","scope":scope}),
+                );
+                assert_eq!(h.run(), vec![done("undo", Value::Null)]);
+                h.callback(&open, true, None);
+                h.run()
+            }
+            "rollback" => {
+                h.callback(&open, false, Some("outer failed"));
+                h.run()
+            }
+            "failed-commit" => {
+                armed.store(true, Ordering::SeqCst);
+                h.callback(&open, true, None);
+                h.run()
+            }
+            "close" => {
+                h.submit(json!({"type":"close"})).unwrap();
+                h.run()
+            }
+            _ => unreachable!(),
+        };
+        assert!(resolution_events(&events).is_empty(), "{mode}: {events:?}");
+        assert!(
+            unsent_events(&events)
+                .iter()
+                .all(|e| e["snapshot"]["closed"] == true),
+            "only close ends observers: {mode}: {events:?}"
+        );
+        assert_eq!(
+            h.recovery_state(),
+            original,
+            "{mode}: all durable state unchanged"
+        );
+        assert!(
+            h.runtime
+                .client()
+                .call_completion05(&owner.call_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            h.runtime
+                .client()
+                .call_completion05(&child.call_id)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            h.runtime.client().pending_tasks().unwrap()[0]["state"],
+            "failed"
+        );
+    }
 }

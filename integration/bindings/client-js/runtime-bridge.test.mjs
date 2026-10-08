@@ -323,6 +323,7 @@ test("a failed open rejects with the engine message and detaches its runtime", a
   const directory = await mkdtemp(join(tmpdir(), "axton-bridge-open-"));
   const opened = [];
   const detached = [];
+  const firstDetach = deferred();
   const carrier = {
     runtimeOpen(request, wake) {
       const id = native.runtimeOpen(request, wake);
@@ -335,6 +336,7 @@ test("a failed open rejects with the engine message and detaches its runtime", a
     runtimeDetach(runtimeId) {
       detached.push(runtimeId);
       native.runtimeDetach(runtimeId);
+      firstDetach.resolve(runtimeId);
     },
   };
   try {
@@ -347,6 +349,8 @@ test("a failed open rejects with the engine message and detaches its runtime", a
         error.message !== "client_closed",
     );
     assert.equal(opened.length, 1);
+    // Failed TaskCompleted rejects open; RuntimeClosed owns detachment.
+    assert.equal(await firstDetach.promise, opened[0]);
     assert.deepEqual(detached, opened);
     assert.throws(
       () => native.runtimeSubmit(opened[0], JSON.stringify({ type: "close" })),
@@ -362,6 +366,55 @@ test("a failed open rejects with the engine message and detaches its runtime", a
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("failed open waits for a separate runtimeClosed wake before detaching", async () => {
+  let wake;
+  let requestId;
+  let bridge;
+  const outbox = [];
+  const detached = [];
+  const runtimeId = "failed-open";
+  const carrier = {
+    runtimeOpen(request, notify) {
+      requestId = JSON.parse(request).requestId;
+      wake = notify;
+      return runtimeId;
+    },
+    runtimeSubmit() {
+      assert.fail("failed open must not submit another request");
+    },
+    runtimeDrain(id) {
+      assert.equal(id, runtimeId);
+      return JSON.stringify(outbox.splice(0));
+    },
+    runtimeDetach(id) {
+      detached.push(id);
+    },
+  };
+  const opening = openBridge(carrier, { path: "unused", schema }, (value) => {
+    bridge = value;
+  });
+  const rejected = assert.rejects(opening, { message: "open denied" });
+  outbox.push({
+    type: "taskCompleted",
+    requestId,
+    ok: false,
+    value: null,
+    error: "open denied",
+  });
+  wake();
+  await rejected;
+  assert.equal(bridge.closed, false);
+  assert.deepEqual(detached, []);
+
+  outbox.push({ type: "runtimeClosed" });
+  wake();
+  assert.equal(bridge.closed, true);
+  assert.deepEqual(detached, [runtimeId]);
+  wake();
+  await bridge.close();
+  assert.deepEqual(detached, [runtimeId]);
 });
 
 test("close during an open callback rolls back and settles every waiter", async () => {

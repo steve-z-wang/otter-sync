@@ -39,7 +39,7 @@ export type ClientSyncState = {
   beforeImages: number;
   cursors: Record<string, number>;
   streams: string[];
-  rejections: Rejection[];
+  rejections: RefusedAct[];
 };
 import type { QuerySpec, RecordValue } from "./values.mts";
 import {
@@ -75,6 +75,7 @@ import {
   type ClientFailures,
   type ClientOutbound,
   type ClientRejections,
+  type RefusedAct,
 } from "./unsent.mts";
 export type {
   ActOperation,

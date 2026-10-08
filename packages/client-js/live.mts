@@ -8,11 +8,7 @@ import {
 import type { SocketEvents, Transport } from "./connection.mts";
 
 export type ServerConnection = {
-  /**
-   * HTTP by route: `push` to `/sync/mutations`, `pull` to `/sync/pull`,
-   * `action` to `/sync/actions`, `fetch` to `/sync/fetch` and `load` to
-   * `/sync/loads`.
-   */
+  /** HTTP effects use the runtime's six backend routes. */
   readonly push: Transport;
   /** Open `/sync/live`, send the subscribe frame once open, deliver frames until aborted or closed. */
   open(subscribe: string, signal: AbortSignal, on: SocketEvents): void;

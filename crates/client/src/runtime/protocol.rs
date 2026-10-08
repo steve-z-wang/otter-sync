@@ -235,14 +235,13 @@ pub enum Command {
     StreamState {
         stream: String,
     },
-    // Register (or retry) the durable load of one identity and wait for the
-    // run it answered with.
+    // Await finite Bootstrap coverage for the bound Stream.
     StreamBootstrap {
         stream: String,
         #[serde(deserialize_with = "counter")]
         subscription_id: u64,
     },
-    // The stored run of one identity's load.
+    // The bound Stream's finite Bootstrap status.
     StreamBootstrapState {
         stream: String,
         #[serde(deserialize_with = "counter")]
@@ -442,7 +441,7 @@ pub enum TransactionCommand {
     // [`Operation::MutationLocal`] effect and answers only once that
     // callback ended successfully, its writes being the call's local
     // companions. The call is provisional until the transaction commits
-    // ([`Event::TransactionCallState`]). Queries and store hooks are refused.
+    // ([`Event::TransactionCallState`]). Remote reads are refused.
     SubmitMutation {
         name: String,
         #[serde(deserialize_with = "counter")]
@@ -743,12 +742,9 @@ pub enum Operation {
         companion_id: String,
         request_id: String,
     },
-    // Run the registered Model's store handler. The reply uses the normal
-    // callbackResult envelope; Rust owns replay and final settlement.
     #[serde(rename_all = "camelCase")]
-    // `POST` `body` to the route: `push` is `/sync/mutations`, `pull` is
-    // `/sync/pull`, `action` is `/sync/actions`, `fetch` is `/sync/fetch`,
-    // `load` is `/sync/loads`. A host must refuse a route it does not know
+    // POST `body` to one of the six runtime HTTP routes.
+    // A host must refuse a route it does not know
     // rather than post it elsewhere. Answer `ok` with
     // `{"status": <HTTP status>, "body": <response text>}` (a bare string is
     // read as the body), or a failure carrying the HTTP status when there was
@@ -792,11 +788,10 @@ pub enum HttpRoute {
     Push,
     // `/sync/pull`: an ordinary catch-up or a Bootstrap page.
     Pull,
-    // `/sync/actions`: a direct Query or Mutation.
+    // `/sync/actions`: a direct Query.
     Action,
     // `/sync/fetch`: one Model Fetch.
     Fetch,
-    // `/sync/loads`: a batch of native Load pages.
 }
 
 // What a [`Event::Report`] carries.
@@ -813,9 +808,6 @@ pub enum Diagnostic {
     Records {
         reports: Vec<Report>,
     },
-    // An application store hook refused incoming authority. The callback
-    // effect id lets a language bridge attach its original thrown cause.
-
     // A lane or effect failure the application's `onError` would have seen:
     // a transport error, a protocol violation the runtime closed a socket
     // for, a failed credential refresh, a watch that failed to re-run.
@@ -826,8 +818,8 @@ pub enum Diagnostic {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<u16>,
     },
-    // The server refused this client's admission: its answer to a push,
-    // pull, direct call, Load batch or socket upgrade carried the admission
+    // The server refused this client's admission: its answer to an
+    // HTTP request or socket upgrade carried the admission
     // marker. The connection has stopped - nothing is retried and no
     // credential refresh is asked for - and this is reported once for it.
     // `body` is the refusal's JSON body, or its text when it is not JSON.

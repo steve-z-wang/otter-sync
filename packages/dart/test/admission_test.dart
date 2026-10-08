@@ -148,7 +148,8 @@ void main() {
     await session.pull(body, never);
     await session.action(body, never);
     await session.fetch(body, never);
-    await session.load(body, never);
+    await session.handshake(body, never);
+    await session.materialize(body, never);
     final opened = Completer<void>();
     final cancel = Completer<void>();
     session.open(
@@ -167,7 +168,8 @@ void main() {
         '/sync/pull',
         '/sync/actions',
         '/sync/fetch',
-        '/sync/loads',
+        '/sync/handshake',
+        '/sync/materialize',
         '/sync/live',
       ])
         (path, '7', 'Bearer secret'),

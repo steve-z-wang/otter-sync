@@ -1,14 +1,9 @@
 import { reportCallbackError, type EffectOutcome } from "./bridge.mts";
 import type { RecordValue } from "./values.mts";
 
-/**
- * The backend route of one HTTP effect: `push` posts to `/sync/mutations`,
- * `pull` to `/sync/pull`, `action` to `/sync/actions`, `fetch` (one Model
- * Fetch) to `/sync/fetch` and `load` (a batch of native Load pages) to
- * `/sync/loads`.
- */
+/** The six backend routes emitted by the runtime's HTTP effects. */
 export type HttpRoute =
-  "handshake" | "materialize" | "push" | "pull" | "action" | "fetch" | "load";
+  "handshake" | "materialize" | "push" | "pull" | "action" | "fetch";
 /** One HTTP POST: `kind` is the route; an unknown route must be refused. Errors carry `status` when the server answered. */
 export type Transport = (
   kind: HttpRoute,

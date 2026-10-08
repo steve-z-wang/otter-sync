@@ -89,7 +89,6 @@ void deliverDiagnostic(
           diagnostic['message'] as String,
         ),
       );
-
   }
 }
 
@@ -307,7 +306,6 @@ class RuntimeConnection {
       'pull' => _network.pull(body, effect.cancelled),
       'action' => _network.action(body, effect.cancelled),
       'fetch' => _network.fetch(body, effect.cancelled),
-      'load' => _network.load(body, effect.cancelled),
       final route => Future.error(StateError('unknown route $route')),
     };
     sent.then(

@@ -36,12 +36,11 @@ export type BridgeEventType =
 
 /**
  * One observer's state as the runtime published it: a subscription status, a
- * watch's rows or a Load job's status. `closed` marks the last one; nothing
+ * watch's rows or a recovery snapshot. `closed` marks the last one; nothing
  * follows it.
  */
 export type ObserverSnapshot = {
-  kind:
-    "subscription" | "watch" | "load" | "rejections" | "failures" | "pending";
+  kind: "subscription" | "watch" | "rejections" | "failures" | "pending";
   closed?: true;
   [field: string]: any;
 };

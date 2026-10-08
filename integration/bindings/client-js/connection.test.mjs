@@ -320,8 +320,8 @@ test("reports reach onError: records as AxtonReports, errors with the runtime's 
     diagnostic: {
       kind: "records",
       reports: [
-        { kind: "readFailed", model: "Entry", identity: { id: "a" }, stamp: 9, code: "loader.failed" },
-        { kind: "skipped", model: "Entry", identity: { id: "b" }, stamp: 3 },
+        { kind: "diverged", model: "Entry", identity: { id: "a" }, code: "local.diverged" },
+        { kind: "diverged", model: "Entry", identity: { id: "b" } },
       ],
     },
   });
@@ -342,11 +342,11 @@ test("reports reach onError: records as AxtonReports, errors with the runtime's 
   });
   assert.equal(errors.length, 5);
   assert.ok(errors[0] instanceof AxtonReport);
-  assert.equal(errors[0].kind, "readFailed");
-  assert.equal(errors[0].code, "loader.failed");
-  assert.match(errors[0].message, /readFailed: Entry .* stamp 9 \(loader.failed\)/);
+  assert.equal(errors[0].kind, "diverged");
+  assert.equal(errors[0].code, "local.diverged");
+  assert.match(errors[0].message, /diverged: Entry .* \(local.diverged\)/);
   assert.ok(errors[1] instanceof AxtonReport);
-  assert.equal(errors[1].kind, "skipped");
+  assert.equal(errors[1].kind, "diverged");
   assert.ok(errors[2] instanceof Error && !(errors[2] instanceof AxtonReport));
   assert.equal(errors[2].message, "pull failed: 503 unavailable");
   assert.equal(errors[2].status, 503);
@@ -376,8 +376,8 @@ test("a throwing onError is reported and the rest of the reports still arrive", 
       diagnostic: {
         kind: "records",
         reports: [
-          { kind: "conflict", model: "Entry", identity: { id: "a" }, stamp: 1 },
-          { kind: "conflict", model: "Entry", identity: { id: "b" }, stamp: 1 },
+          { kind: "diverged", model: "Entry", identity: { id: "a" } },
+          { kind: "diverged", model: "Entry", identity: { id: "b" } },
         ],
       },
     });

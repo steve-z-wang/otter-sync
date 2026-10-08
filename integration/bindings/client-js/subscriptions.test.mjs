@@ -1,5 +1,5 @@
-// Internal observer routing retained for saved legacy tasks. Current public
-// single-Stream and Bootstrap lifecycle run in scope-protocol/bootstrap suites.
+// Private bound Stream observer routing and Bootstrap handle lifecycle.
+// Real native single-Stream behavior also runs in scope-protocol/bootstrap suites.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Subscriptions } from "../../../packages/client-js/subscriptions.mts";
@@ -58,7 +58,6 @@ async function scriptedRuntime() {
       outbox.push(
         done(JSON.parse(request).requestId, {
           clientId: "c",
-          schema: { rebuilt: false, pending: null, lastRebuild: null },
         }),
       );
       later();
@@ -91,13 +90,6 @@ async function scriptedRuntime() {
             observed = true;
             outbox.push(changed(statusOf()));
           }
-          break;
-        case "streamUnsubscribe":
-          observed = false;
-          outbox.push(
-            changed(statusOf({ active: false, connection: "stopped" }), true),
-            done(input.requestId, { removed: true }),
-          );
           break;
         // A bootstrap parks until the test publishes its outcome.
       }
@@ -170,7 +162,7 @@ test("a terminal snapshot ends the handle: observers hear it once, then nothing,
   const subscription = await subscriptions.subscribe("scope");
   const seen = [];
   subscription.watch((status) => seen.push(status));
-  // A removal the runtime committed elsewhere: the Stream-named form, or a rebuild.
+  // A terminal status published by the runtime.
   publish(changed(statusOf({ active: false, connection: "stopped" }), true));
   assert.deepEqual(
     seen.map((s) => [s.active, s.connection]),
@@ -190,7 +182,6 @@ test("a terminal snapshot ends the handle: observers hear it once, then nothing,
     "a closed handle delivers its last snapshot once",
   );
   const before = tasks.length;
-  await subscription.unsubscribe();
   assert.equal(
     (
       await subscription.bootstrap().then(
@@ -209,32 +200,8 @@ test("a terminal snapshot ends the handle: observers hear it once, then nothing,
   );
 });
 
-test("unsubscribe resolves after the terminal snapshot closed the handle", async () => {
-  const { subscriptions, tasks } = await scriptedRuntime();
-  const subscription = await subscriptions.subscribe("scope");
-  await subscription.unsubscribe();
-  assert.deepEqual(tasks.at(-1), {
-    kind: "streamUnsubscribe",
-    stream: "scope",
-    subscriptionId: 1,
-    requestId: tasks.at(-1).requestId,
-  });
-  assert.deepEqual(
-    { ...subscription.status },
-    statusOf({ active: false, connection: "stopped" }),
-  );
-  const before = tasks.length;
-  await subscription.unsubscribe();
-  assert.equal(
-    tasks.length,
-    before,
-    "repeating it on a removed handle is a no-op",
-  );
-});
-
 test("a registration the engine refuses as closed rejects with subscription.closed", async () => {
-  // The removal committed between this command and the handle's own close, so
-  // the engine - not the handle - is what knows the registration is gone.
+  // The runtime ended the bound handle before its terminal snapshot arrived.
   const { subscriptions, publish, bootstraps } = await scriptedRuntime();
   const subscription = await subscriptions.subscribe("scope");
   const refused = subscription.bootstrap().then(
@@ -380,7 +347,7 @@ test("a closing client marks its handles stopped; one the runtime never ended st
   const before = tasks.length;
   assert.equal(
     (
-      await subscription.unsubscribe().then(
+      await subscription.bootstrap().then(
         () => null,
         (error) => error,
       )

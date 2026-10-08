@@ -1,4 +1,4 @@
-// Load manager is retired; Query once/refresh has its own native fixtures.
+// Finite protocol-5 Bootstrap through the native runtime.
 import test from 'node:test';
 import {Transaction} from '../../../packages/client-js/transaction.mts';
 import {bootstrapSuite} from './bootstrap-harness.mjs';

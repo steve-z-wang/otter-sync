@@ -78,73 +78,25 @@ export function read05(body, result = null, records = []) {
     records,
   };
 }
-export function emptyPull(text) {
+const request05 = (text) => {
   const request = typeof text === "string" ? JSON.parse(text) : text;
-  if (request.protocol === 5)
-    return JSON.stringify(
-      request.materialization ? delivery05(request) : emptyHandshake(request),
-    );
-  const body = typeof text === "string" ? JSON.parse(text) : text;
-  return JSON.stringify(
-    body.kind === "start"
-      ? { context: body.context, manifestId: "fixed", start: 0, total: 0 }
-      : body.kind === "tail"
-        ? { context: body.context, manifestId: body.manifestId, head: 0 }
-        : {
-            context: body.context,
-            pageId: "empty",
-            from: body.after,
-            to: body.after,
-            head: body.after,
-            units: [],
-          },
-  );
+  if (request.protocol !== 5) throw Error("fixture requires protocol 5");
+  return request;
+};
+export function emptyPull(text) {
+  const request = request05(text);
+  return JSON.stringify(request.materialization ? delivery05(request) : emptyHandshake(request));
 }
 export function emptyRead(text) {
-  const request = typeof text === "string" ? JSON.parse(text) : text;
-  if (request.protocol === 5)
-    return JSON.stringify(
-      read05(
-        request,
-        null,
-        request.invocation.kind === "fetch"
-          ? [{ key: request.invocation.key, cursor: null, state: null }]
-          : [],
-      ),
-    );
-  const body = typeof text === "string" ? JSON.parse(text) : text;
-  return JSON.stringify({
-    context: body.context,
-    completion: {
-      callId: body.callId,
-      outcome: { status: "succeeded", result: null },
-    },
-    records: [],
-  });
+  const request = request05(text);
+  return JSON.stringify(read05(request, null,
+    request.invocation.kind === "fetch" ? [{ key: request.invocation.key, cursor: null, state: null }] : []));
 }
 export function emptyMutation(text) {
-  const request = typeof text === "string" ? JSON.parse(text) : text;
-  if (request.protocol === 5)
-    return JSON.stringify({
-      ...context05(request),
-      batchId: request.batchId,
-      digest: request.digest,
-      results: request.mutations.map((mutation) => ({
-        mutationId: mutation.id,
-        outcome: { kind: "accepted", syncCursor: 0, result: null, targets: [] },
-      })),
-    });
-  const body = typeof text === "string" ? JSON.parse(text) : text;
+  const request = request05(text);
   return JSON.stringify({
-    context: body.context,
-    intentDigest: createHash("sha256")
-      .update("axton:protocol4:sha256:mutation-intent\0")
-      .update(canonical(body))
-      .digest("hex"),
-    completion: {
-      callId: body.callId,
-      outcome: { status: "succeeded", result: null },
-    },
-    targets: [],
+    ...context05(request), batchId: request.batchId, digest: request.digest,
+    results: request.mutations.map(mutation => ({mutationId: mutation.id,
+      outcome: {kind: "accepted", syncCursor: 0, result: null, targets: []}})),
   });
 }

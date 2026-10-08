@@ -73,7 +73,6 @@ async function harness(body) {
     gates: new Map(),
     reply: (request, n) => ({
       result: { id: request.invocation.key.identity.id, ...state(`v${n}`) },
-      stamp: n,
     }),
   };
   const FetchClient = createClient(native, Transaction, () => ({
@@ -247,13 +246,15 @@ test("local failures keep their fetch codes and transport details", async () => 
       assert.match(error.cause.message, /503/);
       return true;
     });
-    net.reply = () => ({ result: { id: "other", ...state("x") }, stamp: 1 });
+    net.reply = () => ({ result: { id: "other", ...state("x") } });
     await assert.rejects(
       fetchEntry(client, "a"),
-      (error) =>
-        error instanceof CallError &&
-        error.code === "fetch.store_failed" &&
-        /differs from snapshot/.test(error.cause?.message),
+      (error) => {
+        assert.ok(error instanceof CallError);
+        assert.equal(error.code, "fetch.invalid_response");
+        assert.match(error.cause?.message ?? "", /identity mismatch/);
+        return true;
+      },
     );
   });
 });

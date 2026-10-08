@@ -89,14 +89,13 @@ async function withBridge(body, carrier = native) {
   }
 }
 
-test("open answers the client id and schema state", async () => {
+test("open answers the client id and bound protocol 5 context", async () => {
   await withBridge(async (bridge, opened) => {
     assert.equal(typeof opened.clientId, "string");
-    assert.deepEqual(opened.schema, {
-      rebuilt: false,
-      pending: null,
-      lastRebuild: null,
-    });
+    assert.equal(opened.context.protocol, 5);
+    assert.equal(opened.context.stream, "User:viewer");
+    assert.equal(typeof opened.context.storeId, "string");
+    assert.equal("schema" in opened, false);
     assert.equal(bridge.closed, false);
   });
 });
@@ -620,7 +619,6 @@ test("the bridge dispatches every fixture event and answers effects it has no ha
           ok: true,
           value: {
             clientId: "c",
-            schema: { rebuilt: false, pending: null, lastRebuild: null },
           },
         },
       ]);
@@ -736,7 +734,6 @@ async function scripted(respond = () => [], options = {}) {
         ok: true,
         value: {
           clientId: "c",
-          schema: { rebuilt: false, pending: null, lastRebuild: null },
         },
       });
       later();
@@ -1022,72 +1019,6 @@ test("a callback whose effect was cancelled never runs, even while its task is p
   assert.equal(ran, false);
 });
 
-test("a store callback dispatches without a public task and snapshots its handler", async () => {
-  let wake;
-  const events = [];
-  const inputs = [];
-  let opened;
-  const carrier = {
-    runtimeOpen(request, notify) {
-      opened = JSON.parse(request);
-      wake = notify;
-      events.push({ type: "taskCompleted", requestId: opened.requestId, ok: true,
-        value: { clientId: "c", schema: {} } });
-      setImmediate(() => wake("1"));
-      return "1";
-    },
-    runtimeSubmit(_id, message) {
-      const input = JSON.parse(message);
-      inputs.push(input);
-      if (input.type === "close") events.push({ type: "runtimeClosed" });
-      setImmediate(() => wake("1"));
-    },
-    runtimeDrain: () => JSON.stringify(events.splice(0)),
-    runtimeDetach() {},
-  };
-  const called = [];
-  const handlers = { Entry: async (_tx, changes) => called.push(changes) };
-  const { bridge } = await openBridge(carrier,
-    { path: "unused", schema, onStore: handlers });
-  handlers.Entry = () => { throw Error("replacement must not run"); };
-  assert.equal(opened.storeHooks, undefined);
-  assert.equal("onStore" in opened, false);
-  events.push({ type: "effect", effectId: "store1", operation: {
-    kind: "storeCallback", transactionId: "tx1", model: "Entry",
-    changes: [{ kind: "delete", identity: { id: "e" } }],
-  } });
-  wake("1");
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(called.length, 1);
-  assert.deepEqual(inputs.find((input) => input.effectId === "store1"), {
-    type: "callbackResult", effectId: "store1", transactionId: "tx1", ok: true,
-  });
-  await bridge.close();
-});
-
-test("store effect cancellation aborts an unresolved callback and fences its answer", async () => {
-  const entered = deferred();
-  const gate = deferred();
-  let signal;
-  const { bridge, publish, submitted } = await scripted(() => [], {
-    onStore: { Entry: async (_tx, _changes, cancellation) => {
-      signal = cancellation;
-      entered.resolve();
-      await gate.promise;
-    } },
-  });
-  publish({ type: "effect", effectId: "store2", operation: {
-    kind: "storeCallback", transactionId: "tx2", model: "Entry", changes: [],
-  } });
-  await entered.promise;
-  publish({ type: "cancelEffect", effectId: "store2" });
-  assert.equal(signal.aborted, true);
-  gate.resolve();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(submitted.some((input) => input.effectId === "store2"), false);
-  await bridge.close();
-});
-
 test("public transaction Stream mutation and custom store hook surfaces are absent",async()=>{
  const directory=await mkdtemp(join(tmpdir(),"axton-bound-surface-"));
  const Client=createClient(native,Transaction,()=>({open(){},async push(){throw Error("offline");}}));
@@ -1097,46 +1028,6 @@ test("public transaction Stream mutation and custom store hook surfaces are abse
  }finally{await client.close();await rm(directory,{recursive:true,force:true});}
 });
 
-test("cancelled raw store callback releases decoded changes while user work is unresolved", async () => {
-  const { code, stdout, stderr } = await script(`
-    import { Bridge } from ${JSON.stringify(bridgeModule)};
-    let wake;
-    const outbox = [];
-    let reference;
-    let release;
-    const gate = new Promise(resolve => { release = resolve; });
-    const carrier = {
-      runtimeOpen(request, notify) {
-        wake = notify;
-        outbox.push({type:'taskCompleted',requestId:JSON.parse(request).requestId,
-          ok:true,value:{clientId:'c',schema:{}}});
-        setImmediate(() => wake('1'));
-        return '1';
-      },
-      runtimeSubmit(_id, message) {
-        if (JSON.parse(message).type === 'close') outbox.push({type:'runtimeClosed'});
-        setImmediate(() => wake('1'));
-      },
-      runtimeDrain: () => JSON.stringify(outbox.splice(0)), runtimeDetach() {},
-    };
-    const { bridge } = await openBridge(carrier, {path:'unused',schema:{},
-      onStore:{Entry:(_tx,changes)=>{reference=new WeakRef(changes);return gate;}}});
-    outbox.push({type:'effect',effectId:'e',operation:{kind:'storeCallback',
-      transactionId:'t',model:'Entry',changes:[{kind:'delete',identity:{id:'x'}}]}});
-    wake('1');
-    await new Promise(setImmediate);
-    outbox.push({type:'cancelEffect',effectId:'e'});
-    wake('1');
-    await bridge.close();
-    for(let i=0;i<8;i++){await new Promise(setImmediate);global.gc();}
-    process.stdout.write(reference.deref()===undefined?'collected':'retained');
-    release();
-  `, ["--expose-gc"]);
-  assert.equal(code, 0, stderr);
-  assert.equal(stdout, "collected");
-});
-
-// Protocol-5 carrier evidence independent of the pending native actor join.
 test("Bridge open carries stream and protocol 5 and correlates completion", async () => {
  let request, wake; const events=[];
  const carrier={runtimeOpen(text,notify){request=JSON.parse(text);wake=notify;events.push({type:"taskCompleted",requestId:request.requestId,ok:true,value:{clientId:"native",schema:{}}});queueMicrotask(wake);return "5";},runtimeSubmit(_id,text){if(JSON.parse(text).type==="close")events.push({type:"runtimeClosed"});queueMicrotask(wake);},runtimeDrain(){return JSON.stringify(events.splice(0));},runtimeDetach(){}};

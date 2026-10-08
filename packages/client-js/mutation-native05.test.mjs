@@ -9,9 +9,9 @@ import { Transaction } from './transaction.mts';
 const native = createRequire(import.meta.url)('../../bindings/node/axton-node.node');
 const Client = createClient(native, Transaction, () => ({ push: async () => { throw Error('offline'); }, open() {} }));
 const connection = { url:'http://127.0.0.1:1', token:'offline' };
-const schema = JSON.parse(await readFile(new URL('../../integration/v04-sdk/schema.json',import.meta.url),'utf8'));
+const schema = JSON.parse(await readFile(new URL('../../integration/v05-sdk/schema.json',import.meta.url),'utf8'));
 test('real native callback-before-input is atomic and Call wait requires commit', async () => {
-  const directory = await mkdtemp(join(tmpdir(),'axton-sdk04-'));
+  const directory = await mkdtemp(join(tmpdir(),'axton-sdk05-'));
   const client = await Client.open({path:join(directory,'store'),schema,stream:'User:alice',connection});
   try {
     await client.transaction(async tx => {

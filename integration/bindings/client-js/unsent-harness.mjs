@@ -148,7 +148,7 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
   const text = async (client) => (await client.read("Note", { id: "n" })).text;
 
   // Business refusal and companion rollback run through the real backend in
-  // integration/v04-sdk. These fixtures inspect native unsent dependency fates.
+  // integration/v05-sdk. These fixtures inspect native unsent dependency fates.
   test("a terminal handler failure lists the act; a retry runs the handler again", () => {
     let calls = 0;
     return harness(

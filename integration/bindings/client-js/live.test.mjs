@@ -15,21 +15,11 @@ const timeout = (p) =>
   ]);
 
 const subscribe = JSON.stringify({
-  context: {
-    binding: {
-      backend: "sdk-test",
-      viewer: "viewer",
-      stream: "User:viewer",
-      contract: "v04",
-    },
-    incarnation: "00000000-0000-4000-8000-000000000001",
-    materialization: "test",
-  },
-  models: { Entry: 1 },
-  cursor: 0,
+  protocol: 5,
+  storeId: "00000000-0000-4000-8000-000000000001",
+  stream: "User:viewer",
 });
-const ack = (sub, head = 0) =>
-  JSON.stringify({ context: sub, cursor: sub.cursor, head });
+const ack = (sub, head = 0) => JSON.stringify(emptyHandshake({ ...sub, head }));
 const handlers = (over = {}) => ({
   message: async () => {},
   overflow: async () => {},
@@ -64,16 +54,8 @@ test("internal socket sends the subscribe frame, delivers frames in order, and c
     assert.deepEqual(JSON.parse(message), JSON.parse(subscribe));
     const closed = once(socket, "close");
     socket.send(ack(JSON.parse(message)));
-    socket.send(
-      JSON.stringify({
-        context: JSON.parse(message).context,
-        pageId: "opaque",
-        from: 12,
-        to: 13,
-        head: 13,
-        units: [{ through: 13, changes: [] }],
-      }),
-    );
+    // This carrier test treats frames as opaque bytes, not authority pages.
+    socket.send(JSON.stringify({ sequence: 13 }));
     await timeout(
       new Promise((resolve) => {
         const check = () =>
@@ -82,11 +64,11 @@ test("internal socket sends the subscribe frame, delivers frames in order, and c
       }),
     );
     assert.equal(
-      frames[0].cursor,
+      frames[0].head,
       0,
       "the transport does not interpret frames",
     );
-    assert.equal(frames[1].to, 13);
+    assert.equal(frames[1].sequence, 13);
     abort.abort();
     await timeout(closed);
   } finally {
@@ -139,10 +121,10 @@ import { tmpdir } from "node:os";
 import { setImmediate as tick } from "node:timers/promises";
 import { openStore, emptyPull, emptyMutation, emptyHandshake, delivery05 } from "./store-fixture.mjs";
 async function openClient() {
-  const dir = await mkdtemp(join(tmpdir(), "axton-live04-"));
+  const dir = await mkdtemp(join(tmpdir(), "axton-live05-"));
   const schema = JSON.parse(
     await readFile(
-      new URL("../../v04-sdk/schema.json", import.meta.url),
+      new URL("../../v05-sdk/schema.json", import.meta.url),
       "utf8",
     ),
   );
@@ -1047,8 +1029,8 @@ test("retired registration/raw authority boundaries refuse rather than fabricate
   assert.equal(runtime.Client.prototype.mutate, undefined);
   const f = await openClient();
   try {
-    await assert.rejects(f.client.freeze(), /protocol 5 requires named Mutations and its owned transport/);
-    await assert.rejects(f.client.applyPull({}), /protocol 5 requires named Mutations and its owned transport/);
+    assert.equal(f.client.freeze, undefined);
+    assert.equal(f.client.applyPull, undefined);
     await assert.rejects(
       f.client.connect(async () => ""),
       /requires server/,
@@ -1075,17 +1057,20 @@ test("the HTTP transport maps every runtime route and refuses an unknown one", a
       url: `http://127.0.0.1:${server.address().port}`,
       token: "secret",
     });
-    for (const route of ["push", "pull", "action", "load"])
+    for (const route of ["handshake", "push", "pull", "action", "fetch", "materialize"])
       assert.equal(await timeout(live.push(route, "{}")), "{}");
     assert.deepEqual(paths, [
+      "/sync/handshake",
       "/sync/mutations",
       "/sync/pull",
       "/sync/actions",
-      "/sync/loads",
+      "/sync/fetch",
+      "/sync/materialize",
     ]);
+    await assert.rejects(live.push("load", "{}"), /unknown route load/);
     await assert.rejects(live.push("nope", "{}"), /unknown route nope/);
     await assert.rejects(live.push("toString", "{}"), /unknown route toString/);
-    assert.equal(paths.length, 4, "nothing was posted for an unknown route");
+    assert.equal(paths.length, 6, "nothing was posted for an unknown route");
   } finally {
     await new Promise((r) => server.close(r));
   }
@@ -1109,9 +1094,10 @@ async function admissionServer() {
       return;
     }
     const body = JSON.parse(Buffer.concat(chunks));
+    assert.equal(body.protocol, 5);
     res.end(
       JSON.stringify(
-        body.protocol !== 5 ? JSON.parse(emptyPull(body)) : body.mutations ? receiptFor(body)
+        body.mutations ? receiptFor(body)
           : req.url === "/sync/materialize" ? {requestId:body.requestId,delivery:delivery05(body)}
           : JSON.parse(emptyPull(body)),
       ),
@@ -1127,7 +1113,7 @@ async function admissionServer() {
       return;
     }
     ws.handleUpgrade(req, socket, head, (s) =>
-      s.on("message", (m) => { const body=JSON.parse(m); s.send(body.protocol===5?JSON.stringify(emptyHandshake(body)):ack(body)); }),
+      s.on("message", (m) => { const body=JSON.parse(m); s.send(JSON.stringify(emptyHandshake(body))); }),
     );
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -1150,8 +1136,8 @@ test("client headers reach every HTTP route and the upgrade; AXTON's own headers
       token: "secret",
       headers: { "x-app-build": "7" },
     });
-    for (const route of ["push", "pull", "action", "fetch", "load"])
-      await timeout(live.push(route, '{"cursors":{},"mutations":[]}'));
+    for (const route of ["handshake", "push", "pull", "action", "fetch", "materialize"])
+      await timeout(live.push(route, subscribe));
     const opened = Promise.withResolvers();
     const abort = new AbortController();
     live.open(
@@ -1162,11 +1148,12 @@ test("client headers reach every HTTP route and the upgrade; AXTON's own headers
     await timeout(opened.promise);
     abort.abort();
     assert.deepEqual(server.seen, [
+      ["/sync/handshake", "7", "Bearer secret"],
       ["/sync/mutations", "7", "Bearer secret"],
       ["/sync/pull", "7", "Bearer secret"],
       ["/sync/actions", "7", "Bearer secret"],
       ["/sync/fetch", "7", "Bearer secret"],
-      ["/sync/loads", "7", "Bearer secret"],
+      ["/sync/materialize", "7", "Bearer secret"],
       ["/sync/live", "7", "Bearer secret"],
     ]);
     for (const name of [

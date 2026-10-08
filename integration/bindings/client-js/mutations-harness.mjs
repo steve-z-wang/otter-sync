@@ -1,5 +1,5 @@
 // Real native local scope tests shared by the Node and React Native adapters.
-// Backend settlement is covered by integration/v04-sdk/host.test.mts.
+// Backend settlement is covered by integration/v05-sdk/run-host.sh.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
@@ -11,7 +11,7 @@ const native = createRequire(import.meta.url)(
   "../../../bindings/node/axton-node.node",
 );
 const schema = JSON.parse(
-  await readFile(new URL("../../v04-sdk/schema.json", import.meta.url), "utf8"),
+  await readFile(new URL("../../v05-sdk/schema.json", import.meta.url), "utf8"),
 );
 const connection = { url: "http://127.0.0.1:1", token: "offline" };
 const input = (id) => ({ entry: { id, text: "published" }, call: "legal" });
@@ -34,7 +34,7 @@ export function mutationTests(test, Transaction, { savepoints, exactGuard }) {
     },
   }));
   async function run(body) {
-    const directory = await mkdtemp(join(tmpdir(), "axton-scopes04-"));
+    const directory = await mkdtemp(join(tmpdir(), "axton-scopes05-"));
     const path = join(directory, "db");
     let client = await Client.open({
       path,

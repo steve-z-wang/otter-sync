@@ -8,10 +8,10 @@ import {createClient} from '../client-js/runtime.mts';
 import {Transaction} from './transaction.mts';
 const native=createRequire(import.meta.url)('../../bindings/node/axton-node.node');
 const Client=createClient(native,Transaction,()=>({push:async()=>{throw Error('offline');},open(){}}));
-const schema=JSON.parse(await readFile(new URL('../../integration/v04-sdk/schema.json',import.meta.url),'utf8'));
-const connection={url:'http://127.0.0.1:1',token:'offline',identity:{backend:'test',viewer:'alice',contract:'test'}};
+const schema=JSON.parse(await readFile(new URL('../../integration/v05-sdk/schema.json',import.meta.url),'utf8'));
+const connection={url:'http://127.0.0.1:1',token:'offline'};
 test('RN transaction adapter uses actual native owned callback and permits other Store ordinary reads',async()=>{
- const directory=await mkdtemp(join(tmpdir(),'axton-rn04-'));
+ const directory=await mkdtemp(join(tmpdir(),'axton-rn05-'));
  const a=await Client.open({path:join(directory,'a'),schema,stream:'User:alice',connection});
  const b=await Client.open({path:join(directory,'b'),schema,stream:'User:alice',connection});
  try {

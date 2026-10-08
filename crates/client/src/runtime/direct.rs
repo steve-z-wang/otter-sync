@@ -479,67 +479,88 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let mut snapshot_mismatch = false;
         let decoded = (|| {
             let request = crate::v05::decode::<crate::v05::ReadRequest>(call.body.as_bytes())?;
-            let response = crate::v05::decode::<crate::v05::ReadResponse>(response.as_bytes())?;
+            let mut response = crate::v05::decode::<crate::v05::ReadResponse>(response.as_bytes())?;
             let active = self.client.request_context05()?;
-            if response.context == request.context
-                && request.context == active
-                && response.request_id == request.request_id
-                && let crate::v05::ReadInvocation::Fetch { key, .. } = &request.invocation
-                && let crate::v05::ReadOutcome::Succeeded { result } = &response.outcome
-                && let [record] = response.records.as_slice()
-                && record.key == *key
-                && !record.state.as_object().is_some_and(|state| {
-                    key.identity
-                        .as_object()
-                        .unwrap()
-                        .keys()
-                        .any(|field| state.contains_key(field))
-                })
+            // Correlation and snapshot agreement use the caller's retained read
+            // contract. The cache record remains its separate local projection.
+            response.admit_correlation(&request, &active)?;
+            let mut admitted = response.clone();
+            if let crate::v05::ReadInvocation::Fetch { key, version } = &request.invocation
+                && let crate::v05::ReadOutcome::Succeeded { result } = &mut response.outcome
             {
-                let expected = if record.state.is_null() {
-                    Value::Null
-                } else {
-                    crate::rows::merge_identity(&key.identity, &record.state)
-                };
-                snapshot_mismatch = *result != expected;
-            }
-            response.admit(&request, &active)?;
-            if let crate::v05::ReadInvocation::Fetch { key, .. } = &request.invocation
-                && let crate::v05::ReadOutcome::Succeeded { result } = &response.outcome
-                && !result.is_null()
-            {
-                let model = self.client.schema.model(&key.model)?;
-                let identity = serde_json::Value::Object(
-                    model
-                        .identity
-                        .iter()
-                        .map(|field| {
-                            (
-                                field.clone(),
-                                result.get(field).cloned().unwrap_or_default(),
-                            )
-                        })
-                        .collect(),
-                );
-                if self
-                    .client
-                    .schema
-                    .record_key(&key.model, &identity)?
+                *result = axton_core::normalize_read_snapshot(
+                    &self.client.schema,
+                    &key.model,
+                    *version,
+                    result,
+                )?;
+                if key
                     .identity
-                    != key.identity
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .any(|(field, value)| result.get(field) != Some(value))
                 {
                     return Err(crate::invalid("Fetch result identity mismatch"));
                 }
-                self.client.schema.normalize_state(&key.model, result)?;
+                if self.client.schema.model(&key.model)?.version == *version
+                    && let [record] = admitted.records.as_mut_slice()
+                    && record.key == *key
+                    && !record.state.as_object().is_some_and(|state| {
+                        key.identity
+                            .as_object()
+                            .unwrap()
+                            .keys()
+                            .any(|field| state.contains_key(field))
+                    })
+                {
+                    let full = if record.state.is_null() {
+                        Value::Null
+                    } else {
+                        crate::rows::merge_identity(&key.identity, &record.state)
+                    };
+                    let expected = axton_core::normalize_read_snapshot(
+                        &self.client.schema,
+                        &key.model,
+                        *version,
+                        &full,
+                    )?;
+                    snapshot_mismatch = *result != expected;
+                    record.state = if expected.is_null() {
+                        Value::Null
+                    } else {
+                        Value::Object(
+                            expected
+                                .as_object()
+                                .unwrap()
+                                .iter()
+                                .filter(|(field, _)| {
+                                    !key.identity.as_object().unwrap().contains_key(*field)
+                                })
+                                .map(|(field, value)| (field.clone(), value.clone()))
+                                .collect(),
+                        )
+                    };
+                }
+                admitted.outcome = crate::v05::ReadOutcome::Succeeded {
+                    result: result.clone(),
+                };
             }
-            for record in &response.records {
-                self.client
-                    .schema
-                    .record_key(&record.key.model, &record.key.identity)?;
-                if !record.state.is_null() {
+            if let crate::v05::ReadInvocation::Fetch { key, version } = &request.invocation
+                && self.client.schema.model(&key.model)?.version == *version
+            {
+                admitted.admit(&request, &active)?;
+            }
+            if request.store {
+                for record in &response.records {
                     self.client
                         .schema
-                        .validate_state(&record.key.model, &record.state)?;
+                        .record_key(&record.key.model, &record.key.identity)?;
+                    if !record.state.is_null() {
+                        self.client
+                            .schema
+                            .validate_state(&record.key.model, &record.state)?;
+                    }
                 }
             }
             Ok::<_, crate::Error>((request, response))

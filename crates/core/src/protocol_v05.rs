@@ -814,13 +814,33 @@ impl Validate for ReadRequest {
     }
 }
 impl ReadResponse {
-    pub fn admit(&self, request: &ReadRequest, active: &RequestContext) -> Result<()> {
+    pub fn admit_correlation(&self, request: &ReadRequest, active: &RequestContext) -> Result<()> {
         self.validate()?;
         request.validate()?;
         request.context.admit(active)?;
         if self.context != request.context || self.request_id != request.request_id {
             return Err(invalid("read correlation mismatch"));
         }
+        if let ReadInvocation::Fetch { key, .. } = &request.invocation
+            && matches!(self.outcome, ReadOutcome::Succeeded { .. })
+        {
+            if self.records.len() != 1 || self.records[0].key != *key {
+                return Err(invalid("Fetch snapshot mismatch"));
+            }
+            if self.records[0].state.as_object().is_some_and(|state| {
+                key.identity
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .any(|field| state.contains_key(field))
+            }) {
+                return Err(invalid("Fetch snapshot repeats identity"));
+            }
+        }
+        Ok(())
+    }
+    pub fn admit(&self, request: &ReadRequest, active: &RequestContext) -> Result<()> {
+        self.admit_correlation(request, active)?;
         if let (ReadInvocation::Fetch { key, .. }, ReadOutcome::Succeeded { result }) =
             (&request.invocation, &self.outcome)
         {

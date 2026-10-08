@@ -1,9 +1,6 @@
 use axton_core::*;
 use serde_json::{Value, json};
 type DescriptorEdit = (&'static str, fn(&mut Value), &'static str);
-fn id(n: u64) -> String {
-    format!("01890f47-1234-7123-8123-{n:012x}")
-}
 
 fn model(name: &str, extra: Value) -> Value {
     let mut fields = vec![

@@ -1127,6 +1127,63 @@ fn normalize_result_model(
     result.extend(state.as_object().unwrap().clone());
     Ok(Value::Object(result))
 }
+/// Normalize a caller's Model snapshot by its requested read descriptor.
+/// Added nullable/defaulted fields use read fallbacks; unknown producer fields
+/// are ignored. Creation defaults never fill a missing required read field.
+pub fn normalize_read_snapshot(
+    schema: &Schema,
+    model: &str,
+    version: u64,
+    value: &Value,
+) -> Result<Value> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
+    let descriptor = match schema.result_model(model, version) {
+        Ok(descriptor) => descriptor.clone(),
+        Err(_) => {
+            let current = schema
+                .models
+                .iter()
+                .find(|m| m.name == model && m.version == version)
+                .ok_or_else(|| invalid(format!("unsupported read Model {model} v{version}")))?;
+            ModelReadDescriptor {
+                name: current.name.clone(),
+                version,
+                identity: current.identity.clone(),
+                fields: current.fields.clone(),
+                enums: schema.enums.clone(),
+            }
+        }
+    };
+    let local = read_schema(schema, &descriptor);
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("read snapshot must be object or null"))?;
+    let identity: Map<String, Value> = descriptor
+        .identity
+        .iter()
+        .filter_map(|name| object.get(name).map(|value| (name.clone(), value.clone())))
+        .collect();
+    let key = local.record_key(model, &Value::Object(identity))?;
+    let mut state: Map<String, Value> = object
+        .iter()
+        .filter(|(name, _)| !descriptor.identity.contains(name))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    for field in &descriptor.fields {
+        if !descriptor.identity.contains(&field.name)
+            && !state.contains_key(&field.name)
+            && let Some(fallback) = read_field_fallback(field)
+        {
+            state.insert(field.name.clone(), fallback);
+        }
+    }
+    let state = local.validate_state(model, &Value::Object(state))?;
+    let mut result = key.identity.as_object().unwrap().clone();
+    result.extend(state.as_object().unwrap().clone());
+    Ok(Value::Object(result))
+}
 pub fn materialize_action_model(
     schema: &Schema,
     model: &str,

@@ -1174,3 +1174,55 @@ fn dismiss_missing_is_noop_but_pending_and_accepted_outcomes_are_protected() {
             .is_err()
     );
 }
+
+#[test]
+fn failed_reset_keeps_old_store_rows_authority_and_prefix_after_real_reopen() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let failure = Arc::new(AtomicBool::new(false));
+    let mut c = Client::open05(
+        FaultStore {
+            inner: SqliteStore::open(&path).unwrap(),
+            fail_commit: failure.clone(),
+            crash_ack: false,
+        },
+        schema(),
+        "User:u",
+    )
+    .unwrap();
+    c.initialize_stream05(0).unwrap();
+    let old = c.request_context05().unwrap();
+    c.install_authority05(
+        &old,
+        &[v05::AuthorityChange::Record {
+            key: stream_key("e"),
+            cursor: 57,
+            state: state("authority"),
+        }],
+        Some((0, 57)),
+    )
+    .unwrap();
+    failure.store(true, Ordering::SeqCst);
+    assert!(c.reset_store05(true).is_err());
+    assert_eq!(c.request_context05().unwrap(), old);
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "authority");
+    assert_eq!(c.store_status05().unwrap().cursor, Some(57));
+    drop(c);
+    let mut c = Client::open05(
+        FaultStore {
+            inner: SqliteStore::open(&path).unwrap(),
+            fail_commit: failure,
+            crash_ack: false,
+        },
+        schema(),
+        "User:u",
+    )
+    .unwrap();
+    assert_eq!(c.request_context05().unwrap(), old);
+    assert_eq!(c.store_status05().unwrap().cursor, Some(57));
+    assert_eq!(
+        c.record_evidence05(&key()).unwrap().current.unwrap().cursor,
+        57
+    );
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "authority");
+}

@@ -60,7 +60,6 @@ pub(crate) fn derive<S: ClientStore>(
             mutation.prerequisites.push(canonical_json(&invocation)?);
         }
     }
-    mutation.lifecycle_dependencies = lifecycle.into_iter().collect();
     mutation.prerequisites.sort();
     mutation.prerequisites.dedup();
     let mut sequences: BTreeSet<_> = mutation.sequence_dependencies.iter().copied().collect();
@@ -100,6 +99,10 @@ pub(crate) fn derive<S: ClientStore>(
             }
         }
     }
+    // Lifecycle already orders this predecessor and additionally propagates
+    // rejection. One predecessor has one edge, with the stronger meaning.
+    sequences.retain(|ordinal| !lifecycle.contains(ordinal));
+    mutation.lifecycle_dependencies = lifecycle.into_iter().collect();
     mutation.sequence_dependencies = sequences.into_iter().collect();
     Ok(())
 }

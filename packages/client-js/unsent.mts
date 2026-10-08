@@ -19,8 +19,8 @@ export type ActOperation = {
   values?: RecordValue;
 };
 /**
- * An act as it was submitted: the call's arguments (after their one-time
- * default fill; `null` for a legacy mutation) and its Model operations.
+ * A named act as submitted: normalized arguments with fresh-create defaults
+ * already folded in, and its declared Model operations.
  * Local companions and cascade effects are not part of it.
  */
 export type SubmittedAct = {

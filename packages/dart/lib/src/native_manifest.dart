@@ -2,7 +2,7 @@
 // tool/write_native_manifest.dart when the release is staged. A checkout
 // lists none: its clients open with an explicit `libraryPath`.
 
-const nativeVersion = '0.5.0'; // x-release-please-version
+const nativeVersion = '0.5.1'; // x-release-please-version
 
 /// Release file name and SHA-256 of each target's `libaxton_dart`, by target.
 const nativeLibraries = <String, ({String file, String sha256})>{};

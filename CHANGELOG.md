@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/zanminwang/axton/compare/v0.5.0...v0.5.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **client:** publish retained observers after Store worker commits ([#250](https://github.com/zanminwang/axton/issues/250)) ([9e44bc9](https://github.com/zanminwang/axton/commit/9e44bc9f72d69fbf7cb4af9b017a47bdcd0669ef))
+* **client:** retain Batch ownership through local settlement ([#252](https://github.com/zanminwang/axton/issues/252)) ([6544fca](https://github.com/zanminwang/axton/commit/6544fca1d82c8cfbedc60f0eca0e418216c4ce6b))
+
 ## [0.5.0](https://github.com/zanminwang/axton/compare/v0.4.2...v0.5.0) (2026-10-08)
 
 

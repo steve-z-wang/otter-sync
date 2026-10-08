@@ -1,6 +1,6 @@
 {
   "name": "@axtonjs/postgres",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "AXTON's PostgreSQL persistence: the framework tables, its SQL and the pg, Prisma and Drizzle shims.",
   "license": "MIT",
   "author": "Zanmin Wang (https://zanminwang.com)",
@@ -39,7 +39,7 @@
     "node": ">=22.18.0"
   },
   "dependencies": {
-    "@axtonjs/server": "0.5.0"
+    "@axtonjs/server": "0.5.1"
   },
   "peerDependencies": {
     "pg": ">=8 <9",

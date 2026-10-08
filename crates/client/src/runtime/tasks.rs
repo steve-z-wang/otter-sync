@@ -122,7 +122,6 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
         let ran = self.unit(now, entropy);
         if ran {
-            self.publish_unsent();
             self.publish();
         }
         ran

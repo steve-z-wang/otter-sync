@@ -392,6 +392,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// Publish what the unit changed: re-run the watches after a commit, then
     /// every status and watch result that differs from the last published.
     pub(super) fn publish(&mut self) {
+        // Every publication path shares the commit mark. Unsent observers
+        // must consume it before Model watches clear it.
+        self.publish_unsent();
         if self.observers.stale && self.transaction.is_none() {
             self.observers.stale = false;
             let ids: Vec<u64> = self.observers.watches.keys().copied().collect();

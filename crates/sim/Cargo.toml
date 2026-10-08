@@ -7,7 +7,6 @@ publish.workspace = true
 [dependencies]
 axton-core = { path = "../core" }
 axton-client = { path = "../client" }
-axton-server = { path = "../server" }
 axton-sqlite = { path = "../sqlite" }
 serde_json.workspace = true
 tempfile.workspace = true

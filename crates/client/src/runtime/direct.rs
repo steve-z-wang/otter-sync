@@ -494,12 +494,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     *version,
                     result,
                 )?;
-                if key
-                    .identity
-                    .as_object()
-                    .unwrap()
-                    .iter()
-                    .any(|(field, value)| result.get(field) != Some(value))
+                if !result.is_null()
+                    && key
+                        .identity
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .any(|(field, value)| result.get(field) != Some(value))
                 {
                     return Err(crate::invalid("Fetch result identity mismatch"));
                 }

@@ -207,3 +207,86 @@ fn retained_fetch_projection_can_rename_fields_without_fabricating_current_value
         json!({"id":ID,"heading":"cache","done":false})
     );
 }
+
+#[test]
+fn not_found_fetch_returns_null_in_both_modes_without_deleting_cached_content() {
+    for store in [false, true] {
+        let (_d, mut r) = runtime(schema_value());
+        let existing = json!({"id":ID,"title":"existing","done":false});
+        assert_eq!(
+            fetch(
+                &mut r,
+                2,
+                true,
+                existing.clone(),
+                json!({"title":"existing","done":false})
+            )["ok"],
+            true
+        );
+        let done = fetch(&mut r, 2, store, Value::Null, Value::Null);
+        assert_eq!(done["ok"], true, "store={store}: {done}");
+        assert_eq!(done["value"]["outcome"]["result"], Value::Null);
+        assert_eq!(
+            read(&mut r),
+            existing,
+            "ordinary null never deletes cached data"
+        );
+    }
+}
+#[test]
+fn same_version_fetch_rejects_null_record_disagreement_in_both_modes() {
+    for store in [false, true] {
+        for (result, state) in [
+            (Value::Null, json!({"title":"row","done":false})),
+            (json!({"id":ID,"title":"row","done":false}), Value::Null),
+        ] {
+            let (_d, mut r) = runtime(schema_value());
+            let done = fetch(&mut r, 2, store, result, state);
+            assert_eq!(done["error"], "fetch.store_failed", "store={store}: {done}");
+            assert_eq!(read(&mut r), Value::Null);
+        }
+    }
+}
+#[test]
+fn retained_fetch_null_caller_and_current_cache_projection_remain_independent() {
+    for store in [false, true] {
+        let (_d, mut r) = runtime(schema_value());
+        let done = fetch(
+            &mut r,
+            1,
+            store,
+            Value::Null,
+            json!({"title":"cache","done":false}),
+        );
+        assert_eq!(done["ok"], true, "store={store}: {done}");
+        assert_eq!(done["value"]["outcome"]["result"], Value::Null);
+        assert_eq!(
+            read(&mut r),
+            if store {
+                json!({"id":ID,"title":"cache","done":false})
+            } else {
+                Value::Null
+            }
+        );
+        let done = fetch(
+            &mut r,
+            1,
+            store,
+            json!({"id":ID,"title":"caller"}),
+            Value::Null,
+        );
+        assert_eq!(done["ok"], true, "store={store}: {done}");
+        assert_eq!(
+            done["value"]["outcome"]["result"],
+            json!({"id":ID,"title":"caller"})
+        );
+        assert_eq!(
+            read(&mut r),
+            if store {
+                json!({"id":ID,"title":"cache","done":false})
+            } else {
+                Value::Null
+            }
+        );
+    }
+}

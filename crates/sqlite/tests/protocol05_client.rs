@@ -193,3 +193,23 @@ fn committing_with_an_unclosed_savepoint_is_refused_and_rolls_back() {
     c.commit_session().unwrap();
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "again");
 }
+
+#[test]
+fn watch_fires_only_for_declared_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    let entry = c.watch(BTreeSet::from(["Entry".into()]));
+    let queue = c.watch(BTreeSet::from(["axton_mutation_queue".into()]));
+    let other = c.watch(BTreeSet::from(["Other".into()]));
+    seed(&mut c, "A");
+    assert!(entry.try_recv().is_ok());
+    assert!(queue.try_recv().is_err());
+    assert!(other.try_recv().is_err());
+    c.transaction(|tx| {
+        tx.submit_mutation05("Edit", 1, json!({"entry":{"id":"e","text":"B"}}), vec![])
+    })
+    .unwrap();
+    assert!(entry.try_recv().is_ok());
+    assert!(queue.try_recv().is_ok());
+    assert!(other.try_recv().is_err());
+}

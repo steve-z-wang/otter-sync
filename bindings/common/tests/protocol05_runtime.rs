@@ -18,8 +18,10 @@ fn open(path: &std::path::Path) -> u64 {
 fn open_schema(path: &std::path::Path, schema: Value) -> u64 {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
-        axton_sqlite::SqliteStore::set_application_data_directory("/private/tmp/axton-task5-locks")
-            .unwrap()
+        axton_sqlite::SqliteStore::set_application_data_directory(
+            std::env::temp_dir().join("axton-task5-locks"),
+        )
+        .unwrap()
     });
     actor::open(json!({"type":"open","requestId":"o","protocol":5,"path":path,"stream":"User:u","schema":schema}),Box::new(|_|{})).unwrap()
 }

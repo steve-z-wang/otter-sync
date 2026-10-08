@@ -16,7 +16,7 @@ fn schema() -> Value {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         axton_sqlite::SqliteStore::set_application_data_directory(
-            "/private/tmp/axton-task8-actor-locks",
+            std::env::temp_dir().join("axton-task8-actor-locks"),
         )
         .unwrap()
     });

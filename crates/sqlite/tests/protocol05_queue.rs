@@ -35,7 +35,8 @@ fn fixed_batch_restores_input_presence_and_excludes_new_members() {
 }
 #[test]
 fn refuses_unsupported_file_without_touching_rollback_or_wal_bytes() {
-    SqliteStore::set_application_data_directory("/private/tmp/axton-task2-locks").unwrap();
+    SqliteStore::set_application_data_directory(std::env::temp_dir().join("axton-task2-locks"))
+        .unwrap();
     let d = tempfile::tempdir().unwrap();
     for wal in [false, true] {
         let p = d.path().join(if wal { "wal.db" } else { "rollback.db" });
@@ -260,7 +261,8 @@ fn discard_refuses_assigned_owner_and_dismiss_retains_completed_outcome() {
 }
 #[test]
 fn snapshot_refusal_cost_and_stream_admission_are_observed() {
-    SqliteStore::set_application_data_directory("/private/tmp/axton-task2-locks").unwrap();
+    SqliteStore::set_application_data_directory(std::env::temp_dir().join("axton-task2-locks"))
+        .unwrap();
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("large.db");
     let db = rusqlite::Connection::open(&p).unwrap();

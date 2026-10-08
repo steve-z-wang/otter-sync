@@ -5,8 +5,10 @@ use serde_json::json;
 fn locks() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
-        SqliteStore::set_application_data_directory("/private/tmp/axton-task8-binding-locks")
-            .unwrap()
+        SqliteStore::set_application_data_directory(
+            std::env::temp_dir().join("axton-task8-binding-locks"),
+        )
+        .unwrap()
     });
 }
 fn schema() -> Schema {

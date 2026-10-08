@@ -23,8 +23,10 @@ fn open(p: &std::path::Path) -> ClientRuntime<SqliteStore> {
     s["actions"] = json!([{"name":"Rename","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single"}],"outputs":[]}]);
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
-        SqliteStore::set_application_data_directory("/private/tmp/axton-task8-callback-locks")
-            .unwrap()
+        SqliteStore::set_application_data_directory(
+            std::env::temp_dir().join("axton-task8-callback-locks"),
+        )
+        .unwrap()
     });
     let mut c = Client::open05(
         SqliteStore::open_exclusive(p).unwrap(),

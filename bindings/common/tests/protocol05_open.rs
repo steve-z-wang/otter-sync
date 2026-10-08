@@ -22,7 +22,7 @@ fn native_open_requires_stream_and_owns_physical_file() {
     assert_eq!(missing["ok"], false);
     actor::detach(id);
     axton_sqlite::SqliteStore::set_application_data_directory(
-        "/private/tmp/axton-task8-open-locks",
+        std::env::temp_dir().join("axton-task8-open-locks"),
     )
     .unwrap();
     let stream = json!("User:a");

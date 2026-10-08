@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
+import { Client } from "../../packages/client-js/index.mts";
 import { Bridge } from "../../packages/client-js/bridge.mts";
 import { GeneratedClient, schema } from "./client.ts";
 import { GeneratedClient as RolloverClient } from "./rollover/client.ts";
@@ -46,7 +47,175 @@ if (process.argv[2] === "enqueue-child") {
   });
   // Exit without close: WAL + committed optimism + queue survive the missing waiter.
   process.exit(73);
+} else if (process.argv[2] === "accepted-child") {
+  const client = await open(process.argv[3], process.argv[4], "killed");
+  await (await publish(client, "killed-accepted", " accepted ")).wait();
+  throw Error("accepted response should remain held");
 } else {
+  test("ported reads: SIGKILL after cloud acceptance replays identical frozen Batch without repeating execution", async () => {
+    const h = await host(),
+      dir = await mkdtemp(join(tmpdir(), "axton-killed-accepted-"));
+    let child, client;
+    try {
+      h.holdAcknowledgements();
+      const path = join(dir, "db");
+      child = spawn(
+        process.execPath,
+        [new URL(import.meta.url).pathname, "accepted-child", path, h.url],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let errors = "";
+      child.stderr.on("data", (bytes) => (errors += bytes));
+      const exited = new Promise((resolve) =>
+        child.once("exit", (code, signal) => resolve({ code, signal })),
+      );
+      await until(
+        () => h.heldAcknowledgementCount > 0,
+        "accepted cloud response held",
+      );
+      assert.ok(h.executions.length > 0);
+      assert.ok(h.executions.every((id) => id === "killed-accepted"));
+      // SQL may retry before acceptance; replay must add no handler attempt afterward.
+      const acceptedExecutions = [...h.executions];
+      const frozen = h.batches[0];
+      child.kill("SIGKILL");
+      assert.deepEqual(await exited, { code: null, signal: "SIGKILL" }, errors);
+      h.releaseAcknowledgements();
+      client = await open(path, h.url, "killed");
+      await until(
+        async () => (await client.syncState()).pending === 0,
+        "killed client recovery",
+      );
+      assert.ok(h.batches.length >= 2);
+      assert.equal(h.batches.at(-1), frozen);
+      assert.deepEqual(h.executions, acceptedExecutions);
+      assert.equal(
+        (await client.models.entry.get({ id: "killed-accepted" })).text,
+        "accepted",
+      );
+      assert.equal(
+        (
+          await h.pool.query(
+            "SELECT count(*)::int n FROM sdk05_entry WHERE id='killed-accepted'",
+          )
+        ).rows[0].n,
+        1,
+      );
+    } finally {
+      if (child?.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
+      h.releaseAcknowledgements();
+      await client?.close();
+      await h.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  test("ported reads: multi-Model Query Loader failure installs neither Model; false and nullable arguments stay read-only", async () => {
+    const h = await host({ mixed: true }),
+      dir = await mkdtemp(join(tmpdir(), "axton-mixed-read-"));
+    let client;
+    try {
+      await h.pool.query(
+        "INSERT INTO sdk05_entry VALUES('mixed-entry','entry','mixed'),('mixed-snapshot','snapshot','mixed')",
+      );
+      client = await Client.open({
+        schema: h.mixedSchema,
+        path: join(dir, "db"),
+        stream: "User:mixed",
+        connection: { url: h.url, token: "mixed" },
+      });
+      const query = (store) =>
+        client.invokeQuery("Mixed", 1, { id: null }, (value) => value, {
+          store,
+        });
+      h.failSnapshot(true);
+      await assert.rejects(query(true));
+      for (const model of ["Entry", "Snapshot"])
+        assert.deepEqual(await client.querySpec(model), []);
+      h.failSnapshot(false);
+      const result = await query(false);
+      assert.equal(result.entry.text, "entry");
+      assert.equal(result.snapshot.text, "snapshot");
+      for (const model of ["Entry", "Snapshot"])
+        assert.deepEqual(await client.querySpec(model), []);
+      assert.deepEqual(await query(true), result);
+      for (const model of ["Entry", "Snapshot"])
+        assert.equal((await client.querySpec(model)).length, 1);
+      assert.equal(
+        (
+          await h.pool.query(
+            "SELECT count(*)::int n FROM axton_stream_record s JOIN axton_record r ON r.id=s.record_id WHERE r.identity->>'id' IN ('mixed-entry','mixed-snapshot')",
+          )
+        ).rows[0].n,
+        0,
+      );
+    } finally {
+      await client?.close();
+      await h.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  test("ported reads: private Model-target no-op settles optimism to existing canonical state without enrollment", async () => {
+    const h = await host(),
+      dir = await mkdtemp(join(tmpdir(), "axton-private-noop-"));
+    let client;
+    try {
+      await h.pool.query(
+        "INSERT INTO sdk05_entry VALUES('private-noop','existing canonical','noop')",
+      );
+      client = await open(join(dir, "db"), undefined, "noop");
+      const call = await publish(
+        client,
+        "private-noop",
+        "optimistic value",
+        "noop",
+      );
+      assert.equal(
+        (await client.models.entry.get({ id: "private-noop" })).text,
+        "optimistic value",
+      );
+      await client.connect({ url: h.url, token: "noop" });
+      const result = await call.wait();
+      assert.equal(result.error, null);
+      assert.equal(result.result.entry.text, "existing canonical");
+      assert.equal(
+        (await client.models.entry.get({ id: "private-noop" })).text,
+        "existing canonical",
+      );
+      assert.equal((await client.syncState()).pending, 0);
+      assert.equal(
+        (
+          await h.pool.query(
+            "SELECT text FROM sdk05_entry WHERE id='private-noop'",
+          )
+        ).rows[0].text,
+        "existing canonical",
+      );
+      assert.equal(
+        (
+          await h.pool.query(
+            "SELECT count(*)::int n FROM axton_stream_record s JOIN axton_record r ON r.id=s.record_id WHERE r.identity->>'id'='private-noop'",
+          )
+        ).rows[0].n,
+        0,
+      );
+      const outcome = (
+        await h.pool.query(
+          "SELECT result FROM axton_mutation_result WHERE store_id=$1",
+          [client.clientId],
+        )
+      ).rows[0].result.outcome;
+      assert.equal(outcome.kind, "accepted");
+      assert.equal(outcome.syncCursor, 0);
+      assert.equal(outcome.targets[0].kind, "private");
+      assert.equal(outcome.targets[0].record.cursor, null);
+      assert.equal(outcome.targets[0].record.state.text, "existing canonical");
+    } finally {
+      await client?.close();
+      await h.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   test("A1/A2/A4/A8/A11/A15: offline Batch, partial refusal, lost response, local ownership and multi-device completion", async () => {
     const h = await host(),
       dir = await mkdtemp(join(tmpdir(), "axton-sdk05-"));
@@ -564,18 +733,38 @@ if (process.argv[2] === "enqueue-child") {
     }
   });
   test("A10/A11/A12: parked storing Fetch before initial Stream start closes with its retained failure code", async () => {
-    const h = await host(), dir = await mkdtemp(join(tmpdir(),"axton-sdk05-parked-fetch-"));
+    const h = await host(),
+      dir = await mkdtemp(join(tmpdir(), "axton-sdk05-parked-fetch-"));
     let client, connection;
     try {
       h.holdHandshake();
-      client = await open(join(dir,"db"),undefined,"parked-fetch");
-      connection = await client.connect({url:h.url,token:"parked-fetch"});
-      await until(()=>h.requests.some(request=>request.route === "/sync/handshake"),"initial handshake held");
-      const failure = assert.rejects(client.fetch.entry({id:"not-held"}),error=>error.code === "fetch.unavailable" && error.execution === "unknown");
-      assert.equal(await client.fetch.entry({id:"not-held"},{store:false}),null);
-      await client.models.draft.create({id:"local",text:"independent"});
-      assert.equal((await client.models.draft.get({id:"local"})).text,"independent");
-      assert.equal(h.requests.filter(request=>request.route === "/sync/fetch" && JSON.parse(request.body).store).length,0);
+      client = await open(join(dir, "db"), undefined, "parked-fetch");
+      connection = await client.connect({ url: h.url, token: "parked-fetch" });
+      await until(
+        () => h.requests.some((request) => request.route === "/sync/handshake"),
+        "initial handshake held",
+      );
+      const failure = assert.rejects(
+        client.fetch.entry({ id: "not-held" }),
+        (error) =>
+          error.code === "fetch.unavailable" && error.execution === "unknown",
+      );
+      assert.equal(
+        await client.fetch.entry({ id: "not-held" }, { store: false }),
+        null,
+      );
+      await client.models.draft.create({ id: "local", text: "independent" });
+      assert.equal(
+        (await client.models.draft.get({ id: "local" })).text,
+        "independent",
+      );
+      assert.equal(
+        h.requests.filter(
+          (request) =>
+            request.route === "/sync/fetch" && JSON.parse(request.body).store,
+        ).length,
+        0,
+      );
       await connection.close();
       await failure;
     } finally {
@@ -583,7 +772,7 @@ if (process.argv[2] === "enqueue-child") {
       await connection?.close();
       await client?.close();
       await h.close();
-      await rm(dir,{recursive:true,force:true});
+      await rm(dir, { recursive: true, force: true });
     }
   });
   test("A5/A9: first storing read waits for durable Stream start while store false remains independent", async () => {

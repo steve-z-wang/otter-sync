@@ -2,6 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { Pool } from "pg";
+import { createBackend as createRuntimeBackend } from "../../packages/server/index.mts";
 import { pg } from "../../packages/postgres/index.mts";
 import {
   createBackend,
@@ -15,6 +16,7 @@ export async function host({
   rollover = false,
   versioned = false,
   materializations = {},
+  mixed = false,
 } = {}) {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   await pool.query(
@@ -32,6 +34,7 @@ export async function host({
     batches = [],
     requests = [],
     errors = [];
+  let snapshotFailure = false;
   const loader = async ({ tx, ids, userId }) => {
     const { rows } = await tx.query(
       "SELECT id,text FROM sdk05_entry WHERE id=ANY($1) AND owner=$2",
@@ -59,6 +62,7 @@ export async function host({
         executions.push(args.entry.id);
         if (args.entry.text === "refuse")
           throw new MutationRejected("publish.refused");
+        if (args.call === "noop") return { entry: { id: args.entry.id } };
         await ctx.tx.query("INSERT INTO sdk05_entry VALUES($1,$2,$3)", [
           args.entry.id,
           args.entry.text.trim(),
@@ -94,7 +98,10 @@ export async function host({
     },
     loaders: {
       entry: loader,
-      snapshot: loader,
+      snapshot: async (call) => {
+        if (snapshotFailure) throw new Error("mixed Snapshot Loader failed");
+        return loader(call);
+      },
     },
     bootstrap: async () => {},
   };
@@ -115,16 +122,50 @@ export async function host({
         ),
     };
   }
-  const backend = (
-    versioned
-      ? createVersionedBackend
-      : rollover
-        ? createRolloverBackend
-        : createBackend
-  )(options);
-  const real = await backend.listen({ port: 0 });
+  let mixedConfig;
+  if (mixed) {
+    mixedConfig = JSON.parse(
+      await readFile(new URL("./backend.json", import.meta.url), "utf8"),
+    );
+    const action = structuredClone(
+      mixedConfig.schema.actions.find((a) => a.name === "Find"),
+    );
+    action.name = "Mixed";
+    action.inputs[0].nullable = true;
+    action.outputs = [
+      action.outputs[0],
+      {
+        ...action.outputs[0],
+        name: "snapshot",
+        model: "Snapshot",
+        handlerType: { ...action.outputs[0].handlerType, model: "Snapshot" },
+      },
+    ];
+    mixedConfig.actions.push(action);
+    mixedConfig.schema.actions.push(action);
+    options.queries.mixed = async ({ args }) => {
+      if (args.id !== null) throw new Error("nullable argument changed");
+      return {
+        entry: { id: "mixed-entry" },
+        snapshot: { id: "mixed-snapshot" },
+      };
+    };
+  }
+  const backend = mixed
+    ? undefined
+    : (versioned
+        ? createVersionedBackend
+        : rollover
+          ? createRolloverBackend
+          : createBackend)(options);
+  const serving = mixed
+    ? createRuntimeBackend({ ...options, config: mixedConfig })
+    : backend;
+  const real = await serving.listen({ port: 0 });
   let lose = 0,
     hold = false,
+    holdAcknowledgements = false,
+    heldAcknowledgements = [],
     held = [],
     holdReads = false,
     heldReads = [],
@@ -157,6 +198,17 @@ export async function host({
                 Buffer.concat(trace).toString().slice(0, 2500),
               ),
             );
+          }
+          if (mutation && holdAcknowledgements && response.statusCode === 200) {
+            const bytes = [];
+            response.on("data", (chunk) => bytes.push(chunk));
+            response.on("end", () =>
+              heldAcknowledgements.push(() => {
+                outgoing.writeHead(response.statusCode, response.headers);
+                outgoing.end(Buffer.concat(bytes));
+              }),
+            );
+            return;
           }
           if (mutation && lose > 0) {
             lose--;
@@ -242,7 +294,23 @@ export async function host({
   await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
   return {
     pool,
-    backend,
+    backend: serving,
+    mixedSchema: mixedConfig?.schema,
+    failSnapshot(value) {
+      snapshotFailure = value;
+    },
+    holdAcknowledgements() {
+      holdAcknowledgements = true;
+    },
+    get heldAcknowledgementCount() {
+      return heldAcknowledgements.length;
+    },
+    releaseAcknowledgements() {
+      holdAcknowledgements = false;
+      const pending = heldAcknowledgements;
+      heldAcknowledgements = [];
+      for (const send of pending) send();
+    },
     executions,
     queries,
     batches,

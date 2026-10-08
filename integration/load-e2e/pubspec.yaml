@@ -1,7 +1,0 @@
-name: load_e2e
-publish_to: none
-environment:
-  sdk: '>=3.12.0 <4.0.0'
-dependencies:
-  axton:
-    path: ../../packages/dart

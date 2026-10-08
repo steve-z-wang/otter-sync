@@ -1302,3 +1302,267 @@ fn retained_private_snapshot_never_evaluates_new_creation_defaults() {
     c.settle_ready05().unwrap();
     assert_eq!(c.read(&key()).unwrap(), Some(expected));
 }
+
+#[test]
+fn delayed_tracked_receipt_after_remove_finalizes_original_fallback_beneath_later_direct() {
+    use axton_client::sync05::DeliveryQueue;
+    for later_direct in [false, true] {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("db");
+        let mut c =
+            Client::open05(SqliteStore::open(&p).unwrap(), update_schema(), "User:u").unwrap();
+        c.initialize_stream05(0).unwrap();
+        let context = c.request_context05().unwrap();
+        let mut q = DeliveryQueue::new(100_000, 8);
+        let initial = v05::freeze_delivery(
+            context.clone(),
+            "initial".into(),
+            v05::DeliveryPurpose::Bootstrap,
+            0,
+            0,
+            1,
+            10000,
+            vec![v05::DeliveryUnit {
+                index: 0,
+                through: Some(0),
+                changes: vec![v05::AuthorityChange::Record {
+                    key: stream_key("e"),
+                    cursor: 1,
+                    state: state("original"),
+                }],
+            }],
+            10,
+        )
+        .unwrap();
+        q.receive(&initial.header, &initial.parts, &context, 1)
+            .unwrap();
+        c.apply_next_delivery05(&mut q, 1).unwrap().unwrap();
+        let call = c
+            .transaction(|tx| {
+                tx.submit_mutation05(
+                    "Write",
+                    1,
+                    json!({"entry":{"id":"e","text":"optimistic","note":null}}),
+                    vec![],
+                )
+            })
+            .unwrap();
+        let b = c.freeze_batch05().unwrap().unwrap();
+        let a = ack(
+            &b,
+            v05::MutationOutcome::Accepted {
+                sync_cursor: 2,
+                result: Value::Null,
+                targets: vec![v05::SettlementTarget::Stream {
+                    key: stream_key("e"),
+                    cursor: 2,
+                    fallback: v05::ReadRecord {
+                        key: stream_key("e"),
+                        cursor: (),
+                        state: state("accepted"),
+                    },
+                }],
+            },
+        );
+        // The newer Remove arrives before the held HTTP acknowledgement.
+        let removed = v05::freeze_delivery(
+            context.clone(),
+            "remove".into(),
+            v05::DeliveryPurpose::Sync,
+            0,
+            3,
+            3,
+            10000,
+            vec![v05::DeliveryUnit {
+                index: 0,
+                through: Some(3),
+                changes: vec![v05::AuthorityChange::Remove {
+                    key: stream_key("e"),
+                    cursor: 3,
+                }],
+            }],
+            10,
+        )
+        .unwrap();
+        q.receive(&removed.header, &removed.parts, &context, 1)
+            .unwrap();
+        c.apply_next_delivery05(&mut q, 1).unwrap().unwrap();
+        if later_direct {
+            c.transaction(|tx| tx.direct(direct("later-direct")))
+                .unwrap();
+        }
+        c.acknowledge_batch05(&a).unwrap();
+        assert_eq!(c.settle_ready05().unwrap().completions.len(), 1);
+        assert_eq!(
+            c.read(&key()).unwrap().unwrap()["text"],
+            if later_direct {
+                "later-direct"
+            } else {
+                "accepted"
+            }
+        );
+        let e = c.record_evidence05(&key()).unwrap();
+        assert!(e.current.is_none());
+        assert_eq!(e.history[&context.materialization], 1);
+        assert_eq!(e.membership.as_ref().unwrap().cursor, 3);
+        assert!(!e.membership.unwrap().live);
+        assert_eq!(c.store_status05().unwrap().cursor, Some(3));
+        assert_eq!(c.pending_count().unwrap(), 0);
+        assert!(c.pending_settlement05().unwrap().is_empty());
+        assert!(c.call_completion05(&call.call_id).unwrap().is_some());
+        assert!(c.settle_ready05().unwrap().completions.is_empty());
+        drop(c);
+        let mut c =
+            Client::open05(SqliteStore::open(&p).unwrap(), update_schema(), "User:u").unwrap();
+        assert_eq!(
+            c.read(&key()).unwrap().unwrap()["text"],
+            if later_direct {
+                "later-direct"
+            } else {
+                "accepted"
+            }
+        );
+        assert!(c.call_completion05(&call.call_id).unwrap().is_some());
+        c.acknowledge_batch05(&a).unwrap();
+        assert!(c.settle_ready05().unwrap().completions.is_empty());
+    }
+}
+
+#[test]
+fn historical_receipt_target_settles_below_prefix_while_public_bootstrap_remains_incomplete() {
+    use axton_client::sync05::DeliveryQueue;
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("db");
+    let mut c = open(&p);
+    c.initialize_stream05(80).unwrap();
+    let context = c.request_context05().unwrap();
+    let public = v05::freeze_delivery(
+        context.clone(),
+        "public-bootstrap".into(),
+        v05::DeliveryPurpose::Bootstrap,
+        0,
+        80,
+        80,
+        10000,
+        vec![v05::DeliveryUnit {
+            index: 0,
+            through: Some(80),
+            changes: vec![
+                v05::AuthorityChange::Record {
+                    key: stream_key("a"),
+                    cursor: 70,
+                    state: state("public-a"),
+                },
+                v05::AuthorityChange::Record {
+                    key: stream_key("b"),
+                    cursor: 71,
+                    state: state("public-b"),
+                },
+            ],
+        }],
+        1,
+    )
+    .unwrap();
+    assert!(public.parts.len() > 1);
+    let mut q = DeliveryQueue::new(100_000, 8);
+    q.receive(&public.header, &public.parts[..1], &context, 1)
+        .unwrap();
+    assert!(c.apply_next_delivery05(&mut q, 1).unwrap().is_none());
+    let call = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entry":{"id":"e","text":"optimistic","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let b = c.freeze_batch05().unwrap().unwrap();
+    c.acknowledge_batch05(&ack(
+        &b,
+        v05::MutationOutcome::Accepted {
+            sync_cursor: 80,
+            result: Value::Null,
+            targets: vec![v05::SettlementTarget::Stream {
+                key: stream_key("e"),
+                cursor: 57,
+                fallback: v05::ReadRecord {
+                    key: stream_key("e"),
+                    cursor: (),
+                    state: state("fallback"),
+                },
+            }],
+        },
+    ))
+    .unwrap();
+    assert!(c.call_completion05(&call.call_id).unwrap().is_none());
+    let pending = c.pending_settlement05().unwrap().remove(0);
+    assert_eq!(pending.missing_keys, vec![stream_key("e")]);
+    let request = v05::MaterializationRequest {
+        context: context.clone(),
+        request_id: "owned-settlement".into(),
+        owner: v05::MaterializationOwner::Settlement {
+            batch_id: pending.batch_id,
+            mutation_id: pending.mutation_id,
+        },
+        keys: pending.missing_keys,
+        models: Default::default(),
+        continuation: None,
+    };
+    let owned = v05::freeze_materialization(
+        context.clone(),
+        "owned-target".into(),
+        request.owner.clone(),
+        80,
+        10000,
+        vec![v05::DeliveryUnit {
+            index: 0,
+            through: None,
+            changes: vec![v05::AuthorityChange::Record {
+                key: stream_key("e"),
+                cursor: 57,
+                state: state("canonical"),
+            }],
+        }],
+        10,
+    )
+    .unwrap();
+    q.receive_owned(
+        &request,
+        &v05::MaterializationResponse {
+            request_id: request.request_id.clone(),
+            delivery: v05::DeliveryResponse {
+                header: owned.header,
+                parts: owned.parts,
+            },
+        },
+        &context,
+        1,
+    )
+    .unwrap();
+    let applied = c.apply_next_delivery05(&mut q, 1).unwrap().unwrap();
+    assert_eq!(applied.completions.len(), 1);
+    assert!(c.call_completion05(&call.call_id).unwrap().is_some());
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "canonical");
+    assert_eq!(
+        c.record_evidence05(&key()).unwrap().history[&context.materialization],
+        57
+    );
+    assert_eq!(c.store_status05().unwrap().cursor, Some(80));
+    assert_eq!(c.store_status05().unwrap().bootstrap_cursor, None);
+    assert!(c.apply_next_delivery05(&mut q, 1).unwrap().is_none());
+    // Only the remaining public parts may finish public Bootstrap.
+    q.receive(&public.header, &public.parts[1..], &context, 1)
+        .unwrap();
+    assert!(c.apply_next_delivery05(&mut q, 1).unwrap().is_some());
+    assert_eq!(c.store_status05().unwrap().bootstrap_cursor, Some(80));
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "canonical");
+    drop(c);
+    let mut c = open(&p);
+    assert!(c.call_completion05(&call.call_id).unwrap().is_some());
+    assert_eq!(
+        c.record_evidence05(&key()).unwrap().history[&context.materialization],
+        57
+    );
+}

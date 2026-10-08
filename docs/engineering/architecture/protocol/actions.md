@@ -16,7 +16,7 @@ A direct call uses request/response delivery for a typed final result: the defau
 
 ## 5. Building Block View
 
-Wire envelopes, normalization and `ActionStore`: [core/actions.rs](../../../../crates/core/src/actions.rs). Shared execution: [server/actions.rs](../../../../crates/server/src/actions.rs); result and output authority assembly: [server/action_results.rs](../../../../crates/server/src/action_results.rs). HTTP route: [server/index.mts](../../../../packages/server/index.mts). Persistent call claim/response: [Persistence](../server/persistence.md). Model Fetch: wire in [core/fetch.rs](../../../../crates/core/src/fetch.rs), server read in [server/fetch.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/src/fetch.rs), and the claim/replay/savepoint/save protocol it shares with Actions in [server/calls.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/src/calls.rs).
+Wire envelopes, normalization and `ActionStore`: [core/actions.rs](../../../../crates/core/src/actions.rs). Shared execution: [server/actions.rs](../../../../crates/server/src/actions.rs); result and output authority assembly: [server/action_results.rs](../../../../crates/server/src/action_results.rs). HTTP route: [server/index.mts](../../../../packages/server/index.mts). Persistent call claim/response: [Persistence](../server/persistence.md). Model Fetch: wire in [core/fetch.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/core/src/fetch.rs), server read in [server/fetch.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/src/fetch.rs), and the claim/replay/savepoint/save protocol it shares with Actions in [server/calls.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/src/calls.rs).
 
 ## 6. Runtime View
 

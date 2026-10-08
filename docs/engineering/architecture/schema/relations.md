@@ -28,7 +28,7 @@ Code: resolution in [compiler/validate.rs](../../../../crates/compiler/src/valid
 ## 10. Quality Requirements
 
 - Relation metadata compiles and a singular inverse without a unique key is refused. Evidence: [compiler/tests/compiler.rs](../../../../crates/compiler/tests/compiler.rs) `relationships_bindings_and_dependency_metadata`, `singular_inverse_requires_a_unique_foreign_key`.
-- Deleting a record deletes its declared local children, in direct writes, queued mutations and authoritative deletes, and cycles terminate (guarantee L5). Evidence: [sqlite/tests/client.rs](../../../../crates/sqlite/tests/client.rs) `schema_cascade_is_optimistic_same_fate_and_not_extra_wire_operations`, `direct_cascade_handles_cyclic_relationships_once`; [sqlite/tests/downlink.rs](../../../../crates/sqlite/tests/downlink.rs) `delete_cascades_to_descendants_and_their_claims`.
+- Deleting a record deletes its declared local children, in direct writes, queued mutations and authoritative deletes, and cycles terminate (guarantee L5). Evidence: [sqlite/tests/client.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/sqlite/tests/client.rs) `schema_cascade_is_optimistic_same_fate_and_not_extra_wire_operations`, `direct_cascade_handles_cyclic_relationships_once`; [sqlite/tests/downlink.rs](../../../../crates/sqlite/tests/downlink.rs) `delete_cascades_to_descendants_and_their_claims`.
 
 ## 11. Risks and Technical Debt
 

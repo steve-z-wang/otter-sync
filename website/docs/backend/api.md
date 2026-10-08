@@ -311,11 +311,12 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 
 | Route | Purpose |
 | --- | --- |
-| `POST /sync/mutations` | Retained legacy batch route; current generated clients do not use it |
-| `POST /sync/actions` | Execute one frozen named Mutation or direct Query carrier |
+| `POST /sync/handshake` | Bind the Store and capture its authenticated Stream head |
+| `POST /sync/mutations` | Execute an immutable Batch of named Mutations with independent member outcomes |
+| `POST /sync/actions` | Execute a fresh named Query and return null-cursor invocation snapshots |
 | `POST /sync/fetch` | Read one record through its Model's Loader for `client.fetch` |
-| `POST /sync/loads` | Retained legacy route; current generated clients do not use it |
-| `POST /sync/pull` | Serve strict Delta, Bootstrap and receipt-target materialization carriers |
+| `POST /sync/materialize` | Serve settlement-owned or schema-owned finite authority plans |
+| `POST /sync/pull` | Serve finite Bootstrap and Sync plan fragments |
 | `/sync/live` (WebSocket) | Acknowledge the one bound Stream and deliver proved authoritative units |
 
 The listener has no TLS, CORS or proxy-header handling and binds to loopback by default; run it behind a reverse proxy as described in [Deploy the backend](deployment.md).

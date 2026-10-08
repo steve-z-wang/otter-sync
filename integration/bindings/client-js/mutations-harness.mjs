@@ -53,7 +53,7 @@ export function mutationTests(test, Transaction, { savepoints, exactGuard }) {
               process.execPath,
               [
                 "-e",
-                "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1],{readOnly:true});try{process.stdout.write(String(db.prepare('SELECT count(*) AS n FROM axton_mutation').get().n));}finally{db.close();}",
+                "const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1],{readOnly:true});try{process.stdout.write(String(db.prepare('SELECT count(*) AS n FROM axton_mutation_queue WHERE reconciled=0 AND rejection_code IS NULL').get().n));}finally{db.close();}",
                 path,
               ],
               { encoding: "utf8" },

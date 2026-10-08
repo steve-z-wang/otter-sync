@@ -445,6 +445,26 @@ impl<S: ClientStore> Engine<'_, S> {
         changes: &[v05::AuthorityChange],
         held: &mut Held,
     ) -> Result<usize> {
+        // Immediate UNIQUE checks must see the final atomic projection, rather
+        // than a changed row conflicting with another row's superseded value.
+        // The enclosing Store transaction rolls this transient removal back on
+        // any admission, constraint or commit failure.
+        for change in changes {
+            change.validate()?;
+            let k = change.key();
+            let key = self.schema.record_key(&k.model, &k.identity)?;
+            if key.identity != k.identity {
+                return Err(invalid("noncanonical authority key"));
+            }
+            if let v05::AuthorityChange::Record { cursor, .. } = change
+                && self
+                    .evidence05(&key)?
+                    .admission(&context.materialization, *cursor)?
+                    != evidence::AuthorityAdmission::Duplicate
+            {
+                self.main_set(&key, None)?;
+            }
+        }
         let mut applied = 0;
         let mut ordered: Vec<_> = changes.iter().collect();
         ordered.sort_by_key(|c| {

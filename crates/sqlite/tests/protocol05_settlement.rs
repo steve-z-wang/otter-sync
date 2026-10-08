@@ -1245,3 +1245,60 @@ fn failed_reset_keeps_old_store_rows_authority_and_prefix_after_real_reopen() {
     );
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "authority");
 }
+
+#[test]
+fn retained_private_snapshot_never_evaluates_new_creation_defaults() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("db");
+    let mut c = open(&p);
+    let call = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entry":{"id":"e","text":"queued","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let batch = c.freeze_batch05().unwrap().unwrap();
+    let context = c.request_context05().unwrap();
+    c.install_authority05(&context, &[], Some((0, 0))).unwrap();
+    drop(c);
+    let mut desired = serde_json::to_value(schema()).unwrap();
+    let fields = desired["models"][0]["fields"].as_array_mut().unwrap();
+    fields.extend([
+        json!({"name":"token","nullable":true,"type":{"kind":"scalar","name":"uuid"},"createDefault":{"kind":"uuid"}}),
+        json!({"name":"time","nullable":true,"type":{"kind":"scalar","name":"dateTime"},"createDefault":{"kind":"now"}}),
+        json!({"name":"label","nullable":true,"type":{"kind":"scalar","name":"string"},"createDefault":{"kind":"literal","value":"fresh"}}),
+    ]);
+    let desired = Schema::from_value(desired).unwrap();
+    let mut c = Client::open05(SqliteStore::open(&p).unwrap(), desired.clone(), "User:u").unwrap();
+    assert!(c.pending_schema05().unwrap().is_some());
+    assert_eq!(c.freeze_batch05().unwrap().unwrap(), batch);
+    let receipt = ack(
+        &batch,
+        v05::MutationOutcome::Accepted {
+            sync_cursor: 0,
+            result: Value::Null,
+            targets: vec![v05::SettlementTarget::Private {
+                record: v05::ReadRecord {
+                    key: stream_key("e"),
+                    cursor: (),
+                    state: state("accepted"),
+                },
+            }],
+        },
+    );
+    c.acknowledge_batch05(&receipt).unwrap();
+    c.settle_ready05().unwrap();
+    assert!(c.call_completion05(&call.call_id).unwrap().is_some());
+    let expected =
+        json!({"id":"e","text":"accepted","note":null,"token":null,"time":null,"label":null});
+    assert_eq!(c.read(&key()).unwrap(), Some(expected.clone()));
+    drop(c);
+    let mut c = Client::open05(SqliteStore::open(&p).unwrap(), desired, "User:u").unwrap();
+    c.acknowledge_batch05(&receipt).unwrap();
+    c.settle_ready05().unwrap();
+    assert_eq!(c.read(&key()).unwrap(), Some(expected));
+}

@@ -318,7 +318,7 @@ impl<S: ClientStore> Engine<'_, S> {
                 if !self.owned05(id, position, &key)? {
                     continue;
                 }
-                let mut op = Operation {
+                let op = Operation {
                     model: key.model.clone(),
                     identity: key.identity.clone(),
                     op: if record.state.is_null() {
@@ -329,10 +329,13 @@ impl<S: ClientStore> Engine<'_, S> {
                     values: if record.state.is_null() {
                         None
                     } else {
-                        Some(record.state.clone())
+                        // The receipt is authority, not a new create. Project
+                        // omitted current nullable fields to null without
+                        // evaluating creation defaults. Retained descriptor
+                        // validation already admitted this snapshot at ack.
+                        Some(self.schema.normalize_state(&key.model, &record.state)?)
                     },
                 };
-                crate::defaults::fill_operation(self.schema, &mut op);
                 if let Some(v) = &op.values {
                     self.schema.validate_state(&op.model, v)?;
                 }

@@ -57,6 +57,12 @@ if(false){
  // @ts-expect-error raw transactions have no action namespace
  rawTx.actions;
 
+ // @ts-expect-error named Rename input has no tags slot
+ void ({} as GeneratedClient).mutations.rename({id:row.id,title:'x',tags:[]});
+ // @ts-expect-error named Rename identity is a UUID string
+ void ({} as GeneratedClient).mutations.rename({id:1,title:'x'});
+ // @ts-expect-error named Rename title is nonnullable
+ void ({} as GeneratedClient).mutations.rename({id:row.id,title:null});
  // @ts-expect-error enum typo
  const bad:Entry={...row,status:'typo'};
 

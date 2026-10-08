@@ -17,6 +17,7 @@ export async function host({
   versioned = false,
   materializations = {},
   mixed = false,
+  unbootstrapped = false,
 } = {}) {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   await pool.query(
@@ -123,6 +124,12 @@ export async function host({
     };
   }
   let mixedConfig;
+  if (unbootstrapped) {
+    mixedConfig = JSON.parse(
+      await readFile(new URL("./backend.json", import.meta.url), "utf8"),
+    );
+    mixedConfig.schema.models.find((model) => model.name === "Entry").bootstrap = false;
+  }
   if (mixed) {
     mixedConfig = JSON.parse(
       await readFile(new URL("./backend.json", import.meta.url), "utf8"),
@@ -151,14 +158,14 @@ export async function host({
       };
     };
   }
-  const backend = mixed
+  const backend = mixed || unbootstrapped
     ? undefined
     : (versioned
         ? createVersionedBackend
         : rollover
           ? createRolloverBackend
           : createBackend)(options);
-  const serving = mixed
+  const serving = mixed || unbootstrapped
     ? createRuntimeBackend({ ...options, config: mixedConfig })
     : backend;
   const real = await serving.listen({ port: 0 });
@@ -172,7 +179,9 @@ export async function host({
     holdHandshake = false,
     heldHandshake = [],
     holdSchema = false,
-    heldSchema = [];
+    heldSchema = [],
+    holdSettlement = false,
+    heldSettlement = [];
   const proxy = createServer(async (incoming, outgoing) => {
     const chunks = [];
     for await (const chunk of incoming) chunks.push(chunk);
@@ -248,7 +257,13 @@ export async function host({
       upstream.on("error", (error) => outgoing.destroy(error));
       upstream.end(body);
     };
-    if (incoming.url === "/sync/handshake" && holdHandshake)
+    if (
+      incoming.url === "/sync/materialize" &&
+      holdSettlement &&
+      JSON.parse(body).owner.kind === "settlement"
+    )
+      heldSettlement.push(forward);
+    else if (incoming.url === "/sync/handshake" && holdHandshake)
       heldHandshake.push(forward);
     else if (mutation && hold) held.push(forward);
     else forward();
@@ -317,6 +332,18 @@ export async function host({
     requests,
     errors,
     url: `http://127.0.0.1:${proxy.address().port}`,
+    holdSettlement() {
+      holdSettlement = true;
+    },
+    get heldSettlementCount() {
+      return heldSettlement.length;
+    },
+    releaseSettlement() {
+      holdSettlement = false;
+      const pending = heldSettlement;
+      heldSettlement = [];
+      for (const forward of pending) forward();
+    },
     holdSchema() {
       holdSchema = true;
     },

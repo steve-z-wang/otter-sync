@@ -29,7 +29,6 @@ export async function host({ projected = false } = {}) {
   const errors: unknown[] = [];
   let failItems = false,
     injectedLoader = false;
-  let queryGate: (() => Promise<void>) | undefined;
   let invalidIdentity = false;
   let loaderCalls = 0,
     queryCalls = 0;
@@ -83,7 +82,6 @@ export async function host({ projected = false } = {}) {
     queries: {
       async projectItems({ ctx, args }) {
         queryCalls++;
-        await queryGate?.();
         const items = await ctx.tx.query(
           "SELECT id FROM behavior_item WHERE project=$1 ORDER BY id",
           [args.project],
@@ -199,9 +197,6 @@ export async function host({ projected = false } = {}) {
     set failItems(value: boolean) {
       failItems = value;
       if (value) injectedLoader = true;
-    },
-    set queryGate(value: (() => Promise<void>) | undefined) {
-      queryGate = value;
     },
     async close() {
       proxy.releaseAll();

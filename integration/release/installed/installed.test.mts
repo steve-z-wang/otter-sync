@@ -45,11 +45,6 @@ test("installed client and backend: local writes survive reopening, then sync", 
       connection: {
         url: "http://127.0.0.1:1",
         token: "installed",
-        identity: {
-          backend: "installed",
-          viewer: "installed",
-          contract: "installed-v04",
-        },
       },
     });
     await client.mutations.addNote({
@@ -66,11 +61,6 @@ test("installed client and backend: local writes survive reopening, then sync", 
       connection: {
         url: "http://127.0.0.1:1",
         token: "installed",
-        identity: {
-          backend: "installed",
-          viewer: "installed",
-          contract: "installed-v04",
-        },
       },
     });
     assert.equal(
@@ -121,12 +111,9 @@ test("installed client and backend: local writes survive reopening, then sync", 
     const backend = createBackend<PgClient>({
       database: pg(pool),
       authenticate: devAuth(),
-      protocol4: {
-        backendId: "installed",
-        contractId: "installed-v04",
+      protocol5: {
         authorizeStream: (viewer, stream) => stream === `User:${viewer}`,
       },
-      handlers: {},
       queries: {},
       mutations,
       loaders,
@@ -141,11 +128,6 @@ test("installed client and backend: local writes survive reopening, then sync", 
       connection: {
         url: server.url,
         token: "installed",
-        identity: {
-          backend: "installed",
-          viewer: "installed",
-          contract: "installed-v04",
-        },
       },
     });
     await settled(client);
@@ -161,6 +143,23 @@ test("installed client and backend: local writes survive reopening, then sync", 
     assert.deepEqual(
       (await pool.query("SELECT text FROM note WHERE id = 'note-2'")).rows,
       [{ text: "durable" }],
+    );
+    // Untracked business rows remain invocation snapshots until explicitly stored.
+    await pool.query(
+      "INSERT INTO note (id, text) VALUES ('snapshot-only', 'fresh snapshot'), ('dart-snapshot', 'Dart snapshot')",
+    );
+    assert.equal(
+      (await client.fetch.note({ id: "snapshot-only" }, { store: false }))?.text,
+      "fresh snapshot",
+    );
+    assert.equal(await client.models.note.get({ id: "snapshot-only" }), null);
+    assert.equal(
+      (await client.fetch.note({ id: "snapshot-only" }, { store: true }))?.text,
+      "fresh snapshot",
+    );
+    assert.equal(
+      (await client.models.note.get({ id: "snapshot-only" }))?.text,
+      "fresh snapshot",
     );
     if (process.env.AXTON_STAGED_DART) {
       assert.ok(

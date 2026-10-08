@@ -16,11 +16,6 @@ Future<void> main(List<String> args) async {
   final connection = StoreConnection(
     url: args.single,
     token: () => 'installed',
-    identity: const StoreIdentity(
-      backend: 'installed',
-      viewer: 'installed',
-      contract: 'installed-v04',
-    ),
   );
   final path = '${directory.path}/client.sqlite';
   var client = await GeneratedClient.open(
@@ -63,6 +58,25 @@ Future<void> main(List<String> args) async {
       (await client.fetch.note(const NoteIdentity(id: 'note-2')))?.text ==
           'durable',
       'Fetch did not return canonical content',
+    );
+    const snapshotId = NoteIdentity(id: 'dart-snapshot');
+    check(
+      (await client.fetch.note(snapshotId, store: false))?.text ==
+          'Dart snapshot',
+      'non-storing Fetch did not return the installed invocation snapshot',
+    );
+    check(
+      await client.models.note.get(snapshotId) == null,
+      'store:false installed a Model',
+    );
+    check(
+      (await client.fetch.note(snapshotId, store: true))?.text ==
+          'Dart snapshot',
+      'store:true did not return the invocation snapshot',
+    );
+    check(
+      (await client.models.note.get(snapshotId))?.text == 'Dart snapshot',
+      'store:true did not install an unprotected Model',
     );
     await client.close();
     client = await GeneratedClient.open(

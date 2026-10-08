@@ -11,3 +11,5 @@ SQLite gives each physical file one exclusive owner across aliases and processes
 ## 10. Quality Requirements
 
 Changes must preserve the component boundary and the protocol’s commit/failure rules. The joined native gate `integration/v05-sdk/run-host.sh` exercises the generated client, real HTTP/WebSocket backend and SQLite. Installed-package and mobile evidence are separate adoption gates.
+
+Fresh admission installs the canonical layout. Reopen requires its supported layout and preserves pending replay and observer filtering; it does not create old-name compatibility views or upgrade a provisional layout in place.

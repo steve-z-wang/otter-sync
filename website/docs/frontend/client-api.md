@@ -39,7 +39,7 @@ One physical SQLite file belongs to one Client, Store identity and Stream. The b
 
 `prerequisites` registers named prerequisite handlers. Dart `libraryPath` selects an explicit development library; installed packages use their bundled library. Android applications initialize the process's stable support/files directory once with `Client.configureApplicationData(path)` before opening any Store. This directory is application configuration, not a per-client lock option.
 
-Use one active owner per physical SQLite file. Protocol 5 requires a fresh format-5 file; an unsupported file is refused intact. Existing pending work needs a coordinated drain/export/migration using the old release before its server is retired. `resetStore({discardPending: true})` (Dart: `resetStore(discardPending: true)`) creates a new incarnation and abandons pending calls; a normal close/reopen does neither. Failed native loading, incompatible binding, invalid schema, physical ownership conflicts and unwritable storage fail opening.
+Use one active owner per physical SQLite file. Protocol 5 requires a fresh format-5 file; an unsupported file is refused intact. Existing pending work needs a coordinated drain/export recovery using the old release before its server is retired. `resetStore({discardPending: true})` (Dart: `resetStore(discardPending: true)`) creates a new incarnation and abandons pending calls; a normal close/reopen does neither. Failed native loading, incompatible binding, invalid schema, physical ownership conflicts and unwritable storage fail opening.
 
 Watch `client.models` for ongoing state. There are no custom incoming-store callbacks or per-client multiple Stream registrations.
 

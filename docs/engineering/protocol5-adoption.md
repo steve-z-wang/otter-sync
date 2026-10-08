@@ -4,7 +4,7 @@ Protocol 5 changes wire and local storage contracts. It requires an explicitly a
 
 ## Existing files and pending work
 
-Open protocol 5 with a fresh SQLite file. An unsupported file is refused without changing its database, WAL or SHM; the old release can still open it. There is no automatic wipe or in-place upgrade. Keep the old release and backend available while unresolved protocol-4 work is drained, exported or migrated through a separately designed coordinated process. A successful fresh-file test proves none of those migration steps.
+Open protocol 5 with a fresh SQLite file. An unsupported file is refused without changing its database, WAL or SHM; the old release can still open it. There is no automatic wipe or in-place upgrade. Keep the old release and backend available while unresolved protocol-4 work is drained or exported using the old release under a separately owned recovery process. A successful fresh-file test proves no recovery of old pending work. This candidate supplies no old-format migration or compatibility bridge.
 
 Use a separate file per Stream binding and one active Client per physical file. Account switching, file retention and authentication remain application responsibilities. Update backend explicit tracking and generated interfaces together; returning Models does not enroll them. Query/Fetch snapshots have null cursors and cannot replace protected Stream authority. Mutation acknowledgment and locally committed settlement are separate completion boundaries.
 

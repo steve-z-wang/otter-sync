@@ -2,7 +2,7 @@
 
 ## 1. Introduction and Goals
 
-The storage adapter executes SQL and transactions; Rust owns reconciliation policy. Format-5 admission and physical ownership precede schema coordination. Store metadata retains context, S/B/C, frozen Batch, operation input and acknowledgment. Model tables expose the replayed projection; shared legacy SQL views are adapters over current durable truth, not a second queue.
+The storage adapter executes SQL and transactions; Rust owns reconciliation policy. Format-5 admission and physical ownership precede schema coordination. Store metadata retains context, S/B/C, frozen Batch, operation input and acknowledgment. Model tables expose the replayed projection. Production SQL reads the canonical Store and Mutation queue/operation tables directly; there are no legacy table-name views or bridge triggers.
 
 ## 5. Building Block View
 

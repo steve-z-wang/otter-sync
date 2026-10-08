@@ -2,7 +2,7 @@
 
 ## 1. Introduction and Goals
 
-Persistence implements the strict Rust host operation contract inside the application transaction. Store binds principal/Stream and Batch progress; MutationResult retains member outcomes; StreamRecord retains explicit interest and positions; DeliveryPlan/DeliveryUnit retain finite immutable payloads. Publication locks and reserved cursors are transaction-owned. Shared legacy SQL names do not create independent protocol-5 lifecycle truth.
+Persistence implements the strict Rust host operation contract inside the application transaction. Store binds principal/Stream and Batch progress; MutationResult retains member outcomes; StreamRecord retains explicit interest and positions; DeliveryPlan/DeliveryUnit retain finite immutable payloads. Publication locks and reserved cursors are transaction-owned. The fresh namespace contains only canonical protocol-5 tables; old framework layouts are refused intact.
 
 ## 5. Building Block View
 

@@ -12,4 +12,5 @@ serde_json.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
+axton-server = { path = "../server" }
 axton-binding = { path = "../../bindings/common" }

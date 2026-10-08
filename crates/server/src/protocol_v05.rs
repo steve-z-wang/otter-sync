@@ -33,11 +33,19 @@ pub fn validate_mutation_batch(config: &Config, bytes: &[u8]) -> Result<String> 
     }
     String::from_utf8(v05::encode(&request).map_err(request_invalid)?).map_err(request_invalid)
 }
-pub(crate) fn validate_member(config: &Config, m: &v05::Mutation) -> Result<Value> {
-    let action = config
+pub(crate) enum MutationInput {
+    Supported(Value),
+    Unsupported,
+}
+pub(crate) fn validate_member(config: &Config, m: &v05::Mutation) -> Result<MutationInput> {
+    let Some(action) = config
         .schema
-        .action(&m.name, m.version)
-        .map_err(request_invalid)?;
+        .actions
+        .iter()
+        .find(|action| action.name == m.name && action.version == m.version)
+    else {
+        return Ok(MutationInput::Unsupported);
+    };
     if action.kind != CallKind::Mutation {
         return Err(request_invalid("expected Mutation"));
     }
@@ -74,7 +82,7 @@ pub(crate) fn validate_member(config: &Config, m: &v05::Mutation) -> Result<Valu
     let args = v05::reconstruct_input(&m.operations).map_err(request_invalid)?;
     let normalized = axton_core::normalize_action_args(&config.schema, action, &args)
         .map_err(request_invalid)?;
-    Ok(normalized)
+    Ok(MutationInput::Supported(normalized))
 }
 /// Adapts existing normalization/Loader machinery to the v05 persistence seam.
 /// Every nested Loader publication uses the same transaction's reservations.

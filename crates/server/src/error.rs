@@ -12,6 +12,9 @@ use serde_json::Value;
 pub mod code {
     /// The request body could not be decoded, or names a cursor ahead of the Stream head.
     pub const REQUEST_INVALID: &str = "request.invalid";
+    /// A named Mutation version is not retained: a durable per-member refusal,
+    /// never a whole-Batch transport failure.
+    pub const MUTATION_VERSION_UNSUPPORTED: &str = "mutation_version_unsupported";
     /// A model read contract this backend does not serve: the client declared
     /// a model or version that is not retained, or a page holds a model the
     /// client did not declare. In a push this rejects only the mutation that

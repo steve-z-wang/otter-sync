@@ -211,17 +211,14 @@ fn unused_abstract_declarations_still_validate_field_annotations() {
 }
 
 #[test]
-fn abstract_names_cannot_shadow_generated_operation_contracts() {
+fn abstract_names_only_collide_with_current_emitted_operation_contracts() {
     for source in [
         "model Entry { id UUID @@id(id) } abstract model AddInput { value String } mutation Add { entry Entry.create }",
         "model Entry { id UUID @@id(id) } abstract model AddArgs { value String } mutation Add { entry Entry.create }",
-        "model Entry { id UUID @@id(id) } abstract model SearchInput { value String } query Search() { count Int }",
     ] {
-        assert!(
-            compile(source).is_err(),
-            "accepted conflicting generated type: {source}"
-        );
+        compile(source).unwrap();
     }
+    assert!(compile("model Entry { id UUID @@id(id) } abstract model SearchInput { value String } query Search() { count Int }").is_err());
 }
 
 #[test]
@@ -247,7 +244,7 @@ fn abstract_names_do_not_shadow_conditional_model_fetch_helpers() {
 }
 
 #[test]
-fn abstract_types_cannot_shadow_generated_dart_mutation_functions() {
+fn retired_generic_encoder_functions_do_not_reserve_abstract_type_names() {
     for source in [
         "model Entry { id UUID @@id(id) } abstract model add { value String } mutation Add { entry Entry.create }",
         "model Entry { id UUID @@id(id) } abstract model aDD { value String } mutation ADD { entry Entry.create }",
@@ -255,10 +252,8 @@ fn abstract_types_cannot_shadow_generated_dart_mutation_functions() {
         "model add { id UUID @@id(id) } mutation Add { entry add.create }",
         "model Entry { id UUID @@id(id) } mutation Add { entry Entry.create } mutation add { entry Entry.delete }",
     ] {
-        let error = compile(source).unwrap_err();
-        assert!(
-            error.contains("generated identifier") && error.contains("collides"),
-            "{error}"
-        );
+        let schema = compile(source).unwrap();
+        let dart = axton_compiler::dart(&schema);
+        assert!(!dart.contains("dynamic add("));
     }
 }

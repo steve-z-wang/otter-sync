@@ -177,7 +177,6 @@ fn action_semantic_errors_name_the_member_and_location() {
             "todo",
         ),
         ("mutation A(x String, x Int)", "x"),
-        ("mutation Call(x String)", "Call"),
         (
             "model Todo { id String @@id(id) } mutation Todo(x String)",
             "Todo",
@@ -553,17 +552,29 @@ fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
 #[test]
 fn backend_emitter_groups_handler_versions_under_the_mutation_name() {
     let v=compile("model A { id String title String @@id(id) } mutation Edit { a A.update<title> @@version(2) }").unwrap();
-    let mut history=v.clone(); let mut old=v["mutations"][0].clone();old["version"]=serde_json::json!(1);history["backendMutations"]=serde_json::json!([old,v["mutations"][0].clone()]);
-    let ts=axton_compiler::backend_typescript(&history,"@axtonjs/server");
-    assert!(!ts.contains("interface Handlers"));assert!(!ts.contains("edit: { v1(call:"));assert!(ts.contains("\"version\":1"));assert!(ts.contains("\"version\":2"));
+    let mut history = v.clone();
+    let mut old = v["mutations"][0].clone();
+    old["version"] = serde_json::json!(1);
+    history["backendMutations"] = serde_json::json!([old, v["mutations"][0].clone()]);
+    let ts = axton_compiler::backend_typescript(&history, "@axtonjs/server");
+    assert!(!ts.contains("interface Handlers"));
+    assert!(!ts.contains("edit: { v1(call:"));
+    assert!(ts.contains("\"version\":1"));
+    assert!(ts.contains("\"version\":2"));
 }
-
 
 #[test]
 fn backend_emitter_accepts_a_bare_function_only_for_a_v1_only_mutation() {
-    for version in [1,2] { let v=compile(&format!("model A {{ id String @@id(id) }} mutation Save {{ a A.create @@version({version}) }}")).unwrap();let ts=axton_compiler::backend_typescript(&v,"@axtonjs/server");assert!(!ts.contains("HandlerCall<Tx, SaveInput>"));assert!(!ts.contains("options.handlers")); }
+    for version in [1, 2] {
+        let v = compile(&format!(
+            "model A {{ id String @@id(id) }} mutation Save {{ a A.create @@version({version}) }}"
+        ))
+        .unwrap();
+        let ts = axton_compiler::backend_typescript(&v, "@axtonjs/server");
+        assert!(!ts.contains("HandlerCall<Tx, SaveInput>"));
+        assert!(!ts.contains("options.handlers"));
+    }
 }
-
 
 #[test]
 fn generated_clients_expose_one_server_connection() {
@@ -586,7 +597,6 @@ fn generated_clients_expose_one_server_connection() {
     for name in [
         "AdmissionRefused",
         "StoreConnection",
-        "StoreIdentity",
         "PrerequisiteHandler",
         "RefusedAct",
         "FailedAct",
@@ -1101,7 +1111,6 @@ fn deprecations_reach_every_generated_surface_and_leave_the_descriptors_alone() 
         "{ts}"
     );
     assert!(ts.contains("/** @deprecated \"archived\": use closed */\nexport type Status = \"active\" | \"archived\" | \"closed\";"), "{ts}");
-    let backend = axton_compiler::backend_typescript(&v, "@axtonjs/server");
     let dart = axton_compiler::dart(&v);
     assert!(
         dart.contains("enum Status { active, @Deprecated('use closed') archived, closed }"),
@@ -1429,10 +1438,6 @@ fn action_generated_identifiers_reject_current_collisions_with_positions() {
             "FetchHandlerOutput",
         ),
         (
-            "model Todo { id String @@id(id) } mutation Fetch { todo Todo.create } mutation Fetch()",
-            "FetchInput",
-        ),
-        (
             "enum CallOutcome { open } model Todo { id String @@id(id) } mutation Fetch()",
             "CallOutcome",
         ),
@@ -1459,14 +1464,6 @@ fn action_generated_identifiers_reject_current_collisions_with_positions() {
         (
             "model CallRejected { id String @@id(id) } mutation Fetch()",
             "CallRejected",
-        ),
-        (
-            "model MutationFetchHandlers { id String @@id(id) } mutation Fetch()",
-            "MutationFetchHandlers",
-        ),
-        (
-            "model QueryFetchHandlers { id String @@id(id) } query Fetch()",
-            "QueryFetchHandlers",
         ),
         (
             "model FetchOptions { id String @@id(id) } query Fetch()",
@@ -1685,10 +1682,6 @@ fn operation_names_share_one_namespace_and_reserve_route_members() {
             "query Find()\nmutation find()",
             "2:1: duplicate operation find",
         ),
-        ("mutation Call()", "1:1: Mutation name Call is reserved"),
-        ("mutation call()", "1:1: Mutation name call is reserved"),
-        ("query Enqueue()", "1:1: Query name Enqueue is reserved"),
-        ("query enqueue()", "1:1: Query name enqueue is reserved"),
         ("mutation Client()", "1:1: Mutation name Client is reserved"),
         ("query ToString()", "1:1: Query name ToString is reserved"),
         (
@@ -1811,27 +1804,22 @@ fn removed_query_controls_preserve_business_inputs() {
 }
 
 #[test]
-fn invalidate_is_reserved_in_the_query_namespace_only() {
-    for (source, needle) in [
-        (
-            "query Invalidate()",
-            "1:1: Query name Invalidate is reserved",
-        ),
-        (
-            "query invalidate()",
-            "1:1: Query name invalidate is reserved",
-        ),
+fn retired_facade_names_do_not_reserve_current_generated_symbols() {
+    for source in [
+        "query Invalidate()",
+        "query Enqueue()",
+        "mutation Call()",
+        "model StoreIdentity { id String @@id(id) } query Ping()",
+        "model OnceOptions { id String @@id(id) } query Ping()",
+        "model QueryInvalidations { id String @@id(id) } query Ping()",
+        "model MutationFetchHandlers { id String @@id(id) } mutation Fetch()",
+        "model QueryFetchHandlers { id String @@id(id) } query Fetch()",
     ] {
-        let error = compile(source).unwrap_err();
-        assert!(error.starts_with(needle), "{source}: {error}");
-    }
-    compile("mutation Invalidate()").unwrap();
-    for helper in ["OnceOptions", "QueryInvalidations"] {
-        let error = compile(&format!(
-            "model {helper} {{ id String @@id(id) }} query Ping()"
-        ))
-        .unwrap_err();
-        assert!(error.contains("operation helper"), "{helper}: {error}");
+        let schema = compile(source).unwrap();
+        let ts = axton_compiler::client_typescript(&schema, "@axtonjs/client");
+        let dart = axton_compiler::dart(&schema);
+        assert!(!ts.contains("invalidateQuery"));
+        assert!(!dart.contains("invalidateQuery"));
     }
 }
 
@@ -2112,4 +2100,16 @@ fn canonical_scope_type_names_refuse_model_and_enum_collisions() {
     for name in ["Tag", "Name", "Length", "Prototype"] {
         assert!(compile(&format!("model {name} {{ id String @@id(id) }}")).is_ok());
     }
+}
+
+#[test]
+fn retained_generic_descriptor_has_no_emitted_helper_collision_with_named_action() {
+    let value = compile(
+        "model Todo { id String @@id(id) } mutation Fetch { todo Todo.create } mutation Fetch()",
+    )
+    .unwrap();
+    assert_eq!(value["schema"]["clientPolicies"][0]["name"], "Fetch");
+    let backend = axton_compiler::backend_typescript(&value, "@axtonjs/server");
+    assert!(!backend.contains("export interface Handlers"));
+    assert!(backend.contains("MutationHandlerCall<Tx, FetchInput>"));
 }

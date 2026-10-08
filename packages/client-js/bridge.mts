@@ -173,8 +173,6 @@ export class Bridge {
       schema: object;
       stream: string;
       projectionGeneration?: string;
-      discardPending?: boolean;
-      migration?: unknown;
       /** The prerequisite names the host installs handlers for. */
       prerequisiteHandlers?: string[];
     },

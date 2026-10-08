@@ -529,8 +529,7 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
 
   /// Open a runtime for the database at [path] and answer once Rust opened
   /// it. A failed open throws its reason as a [StateError], after the runtime
-  /// announced its end and was detached. [migration] is accepted for API
-  /// compatibility; the row-based client keeps none. [carrier] is a test
+  /// announced its end and was detached. [carrier] is a test
   /// seam; otherwise the C ABI of [libraryPath], or of the library the
   /// package bundled when it is null.
   static Future<Bridge> open({
@@ -539,8 +538,6 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     required String stream,
     String projectionGeneration = "1",
     String? libraryPath,
-    Map<String, dynamic>? migration,
-    bool discardPending = false,
     Carrier? carrier,
     List<String> prerequisiteHandlers = const [],
     Map<String, EffectHandler> effects = const {},

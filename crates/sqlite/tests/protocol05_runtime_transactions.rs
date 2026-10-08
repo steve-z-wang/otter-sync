@@ -1465,6 +1465,188 @@ fn observe_recovery<S: ClientStore + 'static>(h: &mut Harness<S>) -> Vec<String>
     ids
 }
 #[test]
+fn receipt_commit_publishes_retained_unsent_and_model_observers_together() {
+    use axton_client::sync05::{StoreCommand, StoreReport};
+    let mut h = mutation_harness();
+    h.runtime
+        .store_worker05(StoreCommand::Initialize(0))
+        .unwrap();
+    h.events();
+    let ids = observe_recovery(&mut h);
+    let (watch, _) = h.call("models", json!({"kind":"watch","model":"Entry"}));
+    let watch = watch["value"]["observerId"].clone();
+    let (sql, _) = h.watch_sql("sql", "SELECT id,text,note FROM Entry", json!([]));
+    let (_, initial) = h.call(
+        "subscribe",
+        json!({"kind":"streamSubscribe","stream":"User:u"}),
+    );
+    assert!(
+        initial
+            .iter()
+            .any(|e| e["snapshot"]["status"]["initialization"] == "ready")
+    );
+
+    let (submitted, events) = h.call(
+        "publish",
+        json!({"kind":"submitAction","name":"Publish","version":1,
+        "args":{"entry":{"id":"e","text":"optimistic","note":null}}}),
+    );
+    assert_eq!(submitted["ok"], true);
+    assert!(
+        events
+            .iter()
+            .any(|e| e["observerId"] == ids[0] && e["snapshot"]["count"] == 1)
+    );
+    assert_eq!(rows(&events, &watch), [json!([row("optimistic")])]);
+    assert_eq!(rows(&events, &sql), [json!([row("optimistic")])]);
+    let StoreReport::Frozen(Some(batch)) = h.runtime.store_worker05(StoreCommand::Freeze).unwrap()
+    else {
+        panic!("expected frozen Mutation");
+    };
+    assert!(h.events().is_empty(), "freeze changes no observer result");
+    let receipt = v05::BatchAcknowledgement {
+        context: batch.context,
+        batch_id: batch.batch_id,
+        digest: batch.digest,
+        results: vec![v05::MutationResult {
+            mutation_id: batch.mutations[0].id,
+            outcome: v05::MutationOutcome::Rejected {
+                code: "action.invalid".into(),
+                message: None,
+            },
+        }],
+    };
+    h.runtime
+        .store_worker05(StoreCommand::Acknowledge(receipt.clone()))
+        .unwrap();
+    let events = h.events();
+    assert_eq!(h.pending(), 0, "receipt is durably settled");
+    assert_eq!(h.runtime.client().refused_acts05().unwrap().len(), 1);
+    assert_eq!(rows(&events, &watch), [json!([])], "optimism rolls back");
+    assert_eq!(rows(&events, &sql), [json!([])]);
+    let pending = events
+        .iter()
+        .filter(|e| e["observerId"] == ids[0])
+        .collect::<Vec<_>>();
+    assert_eq!(pending.len(), 1, "retained pending observer: {events:?}");
+    assert_eq!(pending[0]["snapshot"]["count"], 0);
+    let refused = events
+        .iter()
+        .filter(|e| e["observerId"] == ids[2])
+        .collect::<Vec<_>>();
+    assert_eq!(refused.len(), 1, "retained refusal observer: {events:?}");
+    assert_eq!(refused[0]["snapshot"]["items"][0]["code"], "action.invalid");
+    assert_eq!(
+        refused[0]["snapshot"]["items"][0]["act"]["args"]["entry"]["text"],
+        "optimistic"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["snapshot"]["kind"] == "subscription" || e["observerId"] == ids[1]),
+        "unchanged status and failures publish no duplicates"
+    );
+    assert!(
+        position(&events, |e| e["type"] == "callCompleted")
+            < position(&events, |e| e["observerId"] == ids[0])
+    );
+
+    h.runtime
+        .store_worker05(StoreCommand::Acknowledge(receipt))
+        .unwrap();
+    assert!(
+        unsent_events(&h.events()).is_empty(),
+        "replayed receipt publishes no duplicate"
+    );
+    let (_, events) = h.call(
+        "dismiss",
+        json!({"kind":"dismiss","ordinal":submitted["value"]["ordinal"]}),
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e["observerId"] == ids[2] && e["snapshot"]["items"] == json!([])),
+        "ordinary commits still publish retained refusals"
+    );
+}
+
+#[test]
+fn accepted_receipt_commit_publishes_retained_pending_observer() {
+    use axton_client::sync05::{StoreCommand, StoreReport};
+    let mut h = mutation_harness();
+    h.runtime
+        .store_worker05(StoreCommand::Initialize(0))
+        .unwrap();
+    h.events();
+    let context = h.runtime.client().request_context05().unwrap();
+    let delivery = v05::freeze_delivery(
+        context.clone(),
+        "bootstrap".into(),
+        v05::DeliveryPurpose::Bootstrap,
+        0,
+        0,
+        0,
+        10000,
+        vec![v05::DeliveryUnit {
+            index: 0,
+            through: Some(0),
+            changes: vec![],
+        }],
+        1,
+    )
+    .unwrap();
+    let mut queue = axton_client::sync05::DeliveryQueue::new(1024 * 1024, 2);
+    queue
+        .receive(&delivery.header, &delivery.parts, &context, NOW)
+        .unwrap();
+    h.runtime
+        .store_worker05(StoreCommand::Apply {
+            plan_id: "bootstrap".into(),
+            queue,
+            now: NOW,
+        })
+        .unwrap();
+    h.events();
+    let ids = observe_recovery(&mut h);
+    let (submitted, _) = h.call(
+        "ping",
+        json!({"kind":"submitAction","name":"Ping","version":1,"args":{}}),
+    );
+    assert_eq!(submitted["ok"], true);
+    let StoreReport::Frozen(Some(batch)) = h.runtime.store_worker05(StoreCommand::Freeze).unwrap()
+    else {
+        panic!("expected frozen Mutation");
+    };
+    h.events();
+    h.runtime
+        .store_worker05(StoreCommand::Acknowledge(v05::BatchAcknowledgement {
+            context: batch.context,
+            batch_id: batch.batch_id,
+            digest: batch.digest,
+            results: vec![v05::MutationResult {
+                mutation_id: batch.mutations[0].id,
+                outcome: v05::MutationOutcome::Accepted {
+                    sync_cursor: 0,
+                    result: Value::Null,
+                    targets: vec![],
+                },
+            }],
+        }))
+        .unwrap();
+    assert!(
+        unsent_events(&h.events()).is_empty(),
+        "acceptance awaits settlement"
+    );
+    h.runtime.store_worker05(StoreCommand::Needs).unwrap();
+    let events = h.events();
+    assert_eq!(h.pending(), 0);
+    assert_eq!(
+        unsent_events(&events),
+        vec![json!({"type":"observerChanged","observerId":ids[0],
+        "snapshot":{"kind":"pending","count":0}})]
+    );
+}
+#[test]
 fn unsent_observers_publish_initial_then_changed_inputs_and_end_on_unwatch_or_close() {
     let (mut h, _armed, owner, child, refused, _key) = recovery_harness();
     let ids = observe_recovery(&mut h);

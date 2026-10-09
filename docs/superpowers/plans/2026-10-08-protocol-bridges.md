@@ -1,8 +1,8 @@
 # Protocol and SDK boundaries implementation plan
 
-> **For agentic workers:** Execute this plan inline with superpowers:executing-plans. Steps use checkbox syntax for tracking.
+> **For agentic workers:** Execute this plan with superpowers:subagent-driven-development, using GPT-6.1 Sol at medium reasoning for implementation agents. The parent owns integration and acceptance. Steps use checkbox syntax for tracking.
 
-**Goal:** Give Protocols, Frontend SDK and Backend SDK concrete source ownership while preserving 0.5.2 behavior.
+**Goal:** Give Protocols, Frontend SDK and Backend SDK concrete source ownership while preserving released 0.5.4 behavior (`4252ae3ef041321f4b79b00e944e522e15be4d1e`).
 
 **Architecture:** A runtime-independent `axton-protocols` crate owns Sync and bridge DTOs/validation. Client/server interfaces consume it; language-facing SDKs and native adapters retain execution and transport responsibilities.
 
@@ -14,18 +14,35 @@
 - The protocol crate must not depend on client, server, storage or bindings.
 - Preserve transaction, retry, apply, correlation, cancellation and settlement behavior.
 - Preserve historical design documents; update living documentation only.
-- Prepare for 0.5.3 through the established release process; do not publish as part of this refactor.
+- Preserve the 0.5.3 Server SDK Bootstrap collection fix and the 0.5.4 PostgreSQL batching implementation and regression tests.
+- Use the established release process after integration; do not reserve a version or publish as part of this refactor.
+
+## Execution ownership
+
+After scope approval, use independent worktrees based on the same 0.5.4 baseline:
+
+| Lane | Owns | Completion evidence |
+| --- | --- | --- |
+| Rust contracts and interfaces | `crates/`, Rust binding imports, Cargo manifests and locks | Protocol-only compilation, unchanged contract fixtures, Client/Server tests |
+| Frontend SDK | `packages/frontend/` moves and package-local API/Bindings modules, tests and manifests | Preserved public exports, TypeScript/Dart/RN checks against rebuilt native artifacts |
+| Backend SDK | `packages/backend/` moves and package-local API/Bindings modules, tests and manifests | Retained host transaction/session, Bootstrap and PostgreSQL batching regressions |
+| Parent integration | Root npm lock/workspaces, shared scripts, CI, release metadata, compiler/generated fixture paths and living docs | Complete host gate, installed packages, independent review and PR |
+
+The three source lanes can run in parallel. Each keeps its existing package-root facade and wire contracts while changing internal ownership. Shared path/tooling edits belong to the parent, so agents do not compete over them. Integration may proceed as each lane lands; final acceptance waits for all three. No lane publishes or merges independently.
 
 ## 1. Extract the contracts
 
-- [x] Run baseline `cargo test -p axton-client -p axton-server --locked` (exit 0 on 2026-10-08; `/private/tmp/axton-protocol-bridges-baseline.log`). This check preceded source changes.
-- [ ] Move `crates/core/src/protocol_v05.rs` to `crates/protocols/src/sync.rs`, and its existing tests to the new crate.
+- [x] Historical baseline: `cargo test -p axton-client -p axton-server --locked` passed on 0.5.2 on 2026-10-08 (`/private/tmp/axton-protocol-bridges-baseline.log`). This does not verify the updated branch or refactor.
+- [ ] Before source edits, run the same focused Client/Server baseline on 0.5.4 and record its exact commit.
+- [ ] Move `crates/core/src/protocol_v05.rs` and `protocol_v05/{delivery,mutation}.rs` to `crates/protocols/src/sync.rs` and `sync/`, and their existing tests to the new crate.
 - [ ] Move `crates/client/src/runtime/protocol.rs` to `crates/protocols/src/client_bridge/mod.rs`. Move Operation, Readiness, Report and QuerySpec DTOs with it; keep query execution and mutation state in Client.
 - [ ] Move the contract portion of `crates/server/src/host.rs`, HandlerContext, stream-member DTOs and structured error carriers into `server_bridge`. Keep `HostExt::call_typed` in `crates/server/src/backend_interface.rs`.
 - [ ] Add workspace/path dependencies, update imports and lockfiles; retain existing runtime facade paths through re-exports.
-- [ ] Run `cargo test -p axton-protocols --locked`, workspace tests and strict Clippy.
+- [ ] Run `cargo test -p axton-protocols --locked` and the focused Client/Server tests; the final host gate runs workspace tests and strict Clippy.
 
 **Concrete edits:** Add `crates/protocols/Cargo.toml` and `src/lib.rs` with `pub mod sync`, `client_bridge`, `server_bridge`. Depend only on `axton-core`, serde/serde_json and the existing hashing library. Register the crate in the workspace. Update client/server and every workspace consumer of `v05`, including SQLite, simulation and binding tests. Update the separately managed `bindings/node/Cargo.lock` as well as the workspace lock.
+
+Move `OperationKind` and `ReportKind` with their DTOs. Keep pure constructors such as `Report::new` with their type and make their cross-crate visibility explicit; do not add inherent implementations for external types in Client. Move the Server member wire conversions with the member types and retain pure response validation in Protocols. Core must not re-export Protocols: `Protocols → core` is the only dependency direction.
 
 **Interface edits:** Move Client entry implementation to `crates/client/src/frontend_interface.rs`, preserving root exports. Replace the former runtime protocol module with a re-export of `axton_protocols::client_bridge`. Put Host/HostExt and typed invocation in `crates/server/src/backend_interface.rs`; preserve `axton_server::Host` and the existing `host` access path as facades over the interface and extracted types. Keep caller context construction and Engine decisions in Server.
 
@@ -42,6 +59,8 @@
 **Frontend modules:** Move the Node client's public operations and language objects into `api/`, and `bridge.mts`, transport, connection and live-effect execution into `bindings/`. Apply the same ownership to Dart and React Native. Keep public entry files forwarding the same exports. Keep Dart transaction scopes, callback zones, provisional Call behavior and native finalizers intact.
 
 **Backend modules:** Move public backend construction, handler/Loader types and Stream selectors into `api/`. Put native function wrappers/error translation and the Host callback adapter into `bindings/`; pass retained context through explicit parameters so extraction does not open another transaction or copy mutable session state. The existing `host-contract.mts` becomes the Server bridge mirror used by these bindings, not another protocol definition in the Engine.
+
+Preserve the implementations currently in `packages/server/{effects,index}.mts` and `packages/postgres/src/{persistence,sql}.mts`. Update paths in `integration/persistence/server/{effects,protocol-v05-delivery,persistence-batching}.test.mjs` and keep the batching suite in `integration/persistence/server/run.sh`. These regressions must pass against the moved modules, including the large Bootstrap result and batched SQL behavior.
 
 **Path checklist:** Update root npm workspaces and TypeScript project references; recursive TypeScript/Prettier source selection; package repository metadata; Dart imports and local pubspec paths; native-manifest generation; generated positive/negative fixtures; integration/example runners; CI; release-please extra-file paths; version/inventory assertions; packing and installed-package runners. The Dart pack path gains a directory level, so its tar strip depth must change from 2 to 3. Refresh npm workspace links and lockfile entries without upgrading third-party dependencies. Historical work-log documents retain their bytes.
 
@@ -71,15 +90,14 @@ Use the existing Dart setup and native-library environment from `docs/engineerin
 **Final commands:**
 
 ```sh
-cargo fmt --all --check
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
 bash scripts/test.sh
 git diff --check
 ```
 
-`scripts/test.sh` includes real PostgreSQL, joined native host cases, generated APIs, Dart, end-to-end and installed npm/Dart acceptance. Record final executed results only; do not convert a baseline or inspected assertion into a completion claim. Review manifests and archive contents for omitted nested API/Bindings modules. Confirm the protocol dependency graph contains no client/server/storage/native imports and that prior design/spec/plan files did not change.
+`scripts/test.sh` includes Rust formatting, workspace tests and strict Clippy, real PostgreSQL, joined native host cases, generated APIs, Dart, end-to-end and installed npm/Dart acceptance. Run the complete gate once after integration; repeat affected checks only after changes or failures. CI must pass on macOS and Linux, including its optimized-native checks. Record final executed results only; do not convert a baseline or inspected assertion into a completion claim. Review manifests and archive contents for omitted nested API/Bindings modules. Confirm the protocol dependency graph contains no client/server/storage/native imports and that previously frozen design/spec/plan files did not change.
 
 ## Current phase
 
 Specification and plan review only. No implementation source has been changed. Implementation starts after Steve approves the written scope and plan. Merging the refactor and merging/publishing a release remain separate operations; a new release follows `docs/engineering/releasing.md`.
+
+Readiness review on 2026-10-09 checked the actual 0.5.4 source and an independent read-only review found no blocking design gap. The existing docs-only branch was rebased onto the baseline above. This is planning evidence, not implementation or test acceptance.

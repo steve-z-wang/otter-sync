@@ -1,6 +1,6 @@
 # Protocol and SDK boundaries
 
-Extract the Client bridge and Server bridge contracts and make the source layout follow the agreed component tree. This is the proposed 0.5.3 refactor, based on 0.5.2. Package versioning follows the existing release process.
+Extract the Client bridge and Server bridge contracts and make the source layout follow the agreed component tree. The baseline is released 0.5.4 (`4252ae3ef041321f4b79b00e944e522e15be4d1e`). Package versioning follows the existing release process; this task does not reserve a version number.
 
 ```text
 AXTON
@@ -46,7 +46,8 @@ The existing Sync contract moves alongside the two bridge contracts so the Proto
 crates/
 ├── core/src/schema.rs                  # Shared schema descriptors and normalization
 ├── protocols/src/
-│   ├── sync.rs                        # Client ↔ Server contracts
+│   ├── sync.rs                        # Client ↔ Server contracts and pure helpers
+│   ├── sync/{delivery,mutation}.rs    # Existing pure planning helpers
 │   ├── client_bridge/
 │   │   ├── mod.rs                     # Input, Command, Event, effect and callback messages
 │   │   ├── model.rs                   # Local operation, readiness and report DTOs
@@ -106,6 +107,8 @@ TypeScript and Dart keep language-side representations and codecs where their pa
 
 Keep all message spellings, validation, error codes, field nullability, correlation IDs, C ABI functions, SDK exports and published package names. Rust continues to own scheduling, retry, Store transactions, authority and settlement. Backend handlers and Loaders retain their transaction and authenticated context. One Client owns one physical file and Stream.
 
+Carry forward the 0.5.3 Bootstrap collection fix in the Server SDK and the 0.5.4 PostgreSQL batching fix, including their regression tests. This is an ownership and layout change, not a rewrite of those implementations.
+
 There is no new protocol discriminator, database migration, Store rebuild, Capso change, package publication or deployment in this task. Previously frozen design/specification documents remain untouched.
 
 Repository-internal Rust imports such as `axton_core::v05` move to `axton_protocols::sync`. The Rust crates are unpublished workspace components. Existing runtime entry paths can re-export protocol types without retaining duplicate definitions or creating a dependency cycle. Public npm/pub.dev imports, serialized data and native symbols remain unchanged.
@@ -114,4 +117,4 @@ Repository-internal Rust imports such as `axton_core::v05` move to `axton_protoc
 
 Run the existing JSON fixture and malformed-message checks from the extracted contracts, independently compile the protocol crate, then run workspace tests and strict linting. Rebuild native artifacts and verify TypeScript, Dart, native client bindings and the real backend host callback. Update live component trees, code maps, links, generator paths, CI and package/release tooling; verify installation of the moved packages outside the checkout.
 
-The acceptance report must separately state local host results, CI results and any unexecuted platform checks. A passing host gate does not establish an iOS/Android device result. Release Please prepares the patch release after integration; package version 0.5.3 does not change Sync's protocol discriminator 5.
+The acceptance report must separately state local host results, CI results and any unexecuted platform checks. A passing host gate does not establish an iOS/Android device result. Release Please prepares the patch release after integration; the package version does not change Sync's protocol discriminator 5.

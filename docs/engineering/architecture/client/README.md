@@ -11,7 +11,7 @@ The client projects settled authority with ordered device work and pending optim
 - [connection](connection/README.md)
 - [engine](engine/README.md)
 - [frontend-interface](frontend-interface.md)
-- [protocol4](protocol4.md)
+- [protocol4](../../history/pre-protocol5/architecture/client/protocol4.md)
 - [runtime](runtime.md)
 - [storage](storage/README.md)
 

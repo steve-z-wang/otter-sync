@@ -8,9 +8,9 @@ The engine retains original Model operations and projects them over authoritativ
 
 [Implementation](../../../../../crates/client/src/settlement05.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
 
-- [loads](loads.md)
+- [loads](../../../history/pre-protocol5/architecture/client/engine/loads.md)
 - [local-operations](local-operations/README.md)
-- [pull](pull.md)
+- [pull](../../../history/pre-protocol5/architecture/client/engine/pull.md)
 - [push](push/README.md)
 - [settlement](settlement.md)
 

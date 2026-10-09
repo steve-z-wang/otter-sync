@@ -12,7 +12,7 @@ The Rust server validates protocol-5 context and immutable Batch intent, invokes
 - [connection](connection/README.md)
 - [engine](engine/README.md)
 - [persistence](persistence.md)
-- [protocol4](protocol4.md)
+- [protocol4](../../history/pre-protocol5/architecture/server/protocol4.md)
 - [protocol5](protocol5.md)
 
 ## 10. Quality Requirements

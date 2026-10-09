@@ -7,4 +7,4 @@
 - [Simulation](simulation/README.md) — Overall Rust sync behavior.
 - [Integration tests](integration/README.md) — Database, language and network boundaries.
 - [End-to-end tests](end-to-end.md) — Complete application paths.
-- [Coverage review](review.md) — Known gaps and the next testing issue.
+- [Coverage review](../history/pre-protocol5/testing/review.md) — Known gaps and the next testing issue.

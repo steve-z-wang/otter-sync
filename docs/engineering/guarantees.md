@@ -1,6 +1,6 @@
 # Guarantees
 
-The requirements for protocol 5. A passing component test does not establish every cross-runtime guarantee; [coverage review](testing/review.md) records evidence and gaps. The [0.3 contract](guarantees-0.3.md) and protocol-4 pages are historical references, not supported file migrations or alternate public APIs.
+The requirements for protocol 5. A passing component test does not establish every cross-runtime guarantee; [coverage review](history/pre-protocol5/testing/review.md) records evidence and gaps. The [0.3 contract](history/pre-protocol5/guarantees-0.3.md) and protocol-4 pages are historical references, not supported file migrations or alternate public APIs.
 
 Each client owns one physical SQLite file, one Store and one Stream. Different files may follow the same Stream. Authentication and publication of every change affecting Loader content or visibility are application responsibilities.
 
@@ -99,7 +99,7 @@ Query/Fetch Model snapshots always carry `cursor:null`. Storage checks current p
 
 ## N. Native Loads
 
-Public Load jobs/schema declarations and N1–N8 are retired. The [0.3 contract](guarantees-0.3.md#n-native-loads) retains internal compatibility requirements. Protocol 5 uses Bootstrap, Query and Model Fetch.
+Public Load jobs/schema declarations and N1–N8 are retired. The [0.3 contract](history/pre-protocol5/guarantees-0.3.md#n-native-loads) retains internal compatibility requirements. Protocol 5 uses Bootstrap, Query and Model Fetch.
 
 ## R. Resilience
 

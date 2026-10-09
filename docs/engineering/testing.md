@@ -12,7 +12,7 @@
 
 ### Guarantees
 
-[Guarantees](guarantees.md) describe the bound Store contract, including offline durability and convergence after delivery resumes. Tests check these requirements under their stated conditions. [Protocol-4 acceptance](testing/0.4.md) separates independent symbolic expectations, actual native/SQLite traces, production PostgreSQL process tests and language/package evidence. Historical compatibility tests are not substitutes for those paths.
+[Guarantees](guarantees.md) describe the bound Store contract, including offline durability and convergence after delivery resumes. Tests check these requirements under their stated conditions. [Protocol-4 acceptance](history/pre-protocol5/testing/0.4.md) separates independent symbolic expectations, actual native/SQLite traces, production PostgreSQL process tests and language/package evidence. Historical compatibility tests are not substitutes for those paths.
 
 ### Component contracts
 
@@ -42,7 +42,7 @@ Component, integration and end-to-end describe the scope of a test. Simulation d
 
 [Strategy](testing/strategy.md) explains how to choose the tests and environment. [Running tests](testing/running.md) lists commands and prerequisites.
 
-[Coverage review](testing/review.md) records current gaps and the scope of the next testing issue. These pages define the intended responsibilities; they do not certify complete coverage.
+[Coverage review](history/pre-protocol5/testing/review.md) records current gaps and the scope of the next testing issue. These pages define the intended responsibilities; they do not certify complete coverage.
 
 ## Code map
 

@@ -28,7 +28,7 @@ Build native artifacts using the prerequisites first. The runners generate their
 
 ## Evidence and limits
 
-The runners above exercise this checkout's current protocol-5 interfaces. Historical Load jobs, durable once/refresh mappings and the protocol-4 transport runner are retired; their earlier results do not establish current behavior. The [protocol-4 reference](0.4.md) preserves that release's evidence.
+The runners above exercise this checkout's current protocol-5 interfaces. Historical Load jobs, durable once/refresh mappings and the protocol-4 transport runner are retired; their earlier results do not establish current behavior. The [protocol-4 reference](../history/pre-protocol5/testing/0.4.md) preserves that release's evidence.
 
 Each runner proves its named scenarios. Passing an individual runner does not establish the [full host gate](running.md#full-host-gate), installed release artifacts, capacity limits or macOS/Linux CI. The finite host freezes Bootstrap coverage and the captured tail; it does not prove convergence under arbitrary server schedules.
 

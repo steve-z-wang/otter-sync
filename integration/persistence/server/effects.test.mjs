@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {createEffects,createLoadEffects,enrollmentBytes,LOAD_ENROLLMENT_PAIRS,LOAD_ENROLLMENT_BYTES} from '../../../packages/server/effects.mts';
+import {createEffects,createLoadEffects,bootstrapEffectsFor,enrollmentBytes,LOAD_ENROLLMENT_PAIRS,LOAD_ENROLLMENT_BYTES} from '../../../packages/server/effects.mts';
 const {schema}=JSON.parse(await readFile(new URL('../../action-runtime-ts/backend.json',import.meta.url),'utf8'));
 const models=schema.models;
 const fresh=()=>createEffects(models);
@@ -9,6 +9,17 @@ const ref=(model,identity)=>({model,identity});
 const track=(stream,model,identity)=>({kind:'track',stream,record:ref(model,identity)});
 const invalid=(streams,model,identity)=>({kind:'invalidate',streams,record:ref(model,identity)});
 const empty={changes:[],declarations:[]};
+test('Bootstrap retains track-only validation, atomic declarations, sticky failures and lifetime checks',()=>{
+ const e=bootstrapEffectsFor(models,[],new Set(['Todo']))(),h=e.stream('S');
+ assert.equal(h.invalidate,undefined);assert.equal(e.invalidate,undefined);
+ h.track.todo(['kept','kept']);assert.deepEqual(e.tracking(),[track('S','Todo',{id:'kept'})]);
+ let caught;try{h.track.todo(['prefix',{}]);}catch(error){caught=error;}
+ assert.deepEqual(e.failure(),{kind:'invalid',error:caught});
+ assert.deepEqual(e.tracking(),[track('S','Todo',{id:'kept'})]);
+ assert.throws(()=>h.track.moment(new Date(0)),/no Loader/);
+ assert.throws(()=>h.track.todo('\ud800'),/Unicode/);
+ e.close();assert.throws(()=>h.track.todo([]),/closed/);
+});
 test('Cartesian tracks and selected invalidations capture names and records once',()=>{
  const effects=fresh(),names=['A','B','A'],ids=[{id:'t'},{id:'u'}];
  const handle=effects.stream(names);handle.track.todo(ids);handle.invalidate.todo(['t','t']);

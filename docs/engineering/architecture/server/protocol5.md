@@ -32,6 +32,8 @@ Input targets are read under the same fence after preparation. A tracked initiat
 
 Handshake authenticates the Store and Stream, runs Bootstrap preparation once, settles its tracking and saves the initial head in one fenced Serializable transaction. Retries recover committed preparation; reconnect returns the current head.
 
+Bootstrap preparation enrolls the complete initial scope. It shares track-only validation, deduplication and sticky declaration failures with Queries, but does not inherit a single read page's 1,000-pair/1-MiB enrollment bounds. Native materialization owns finite-plan capacity and transport paging.
+
 Bootstrap selects the retained schema's marked Models. Repair selects current positions above its committed prefix, including records ahead of the requested boundary. Loader preparation reaches a bounded identity closure before head capture; canonical reads then freeze record/null/Remove authority at that finite head. Core groups same-cursor, unique-Model and cascade dependencies. Independent components may share a bounded unit, but a component is never split to satisfy transport size.
 
 `axton_delivery_plan` and `axton_delivery_unit` store immutable context, principal, full intent, header and part digests and payloads. Continuations authorize again and read staged payloads. Plans expire after five minutes; `delivery.expired` commits cascade cleanup and claims no coverage. Successful new plans also reclaim expired staging. Count capacity is 100,000 identities and plan capacity is 256 MiB; refusal rolls back without partial staging or changed progress.

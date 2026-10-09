@@ -4,7 +4,7 @@
 pub use crate::emit::{backend_typescript, client_typescript, dart, typescript};
 use crate::validate::{
     Action, ActionInput, ActionOutput, ActionOutputSource, ActionOutputType, Deprecation,
-    FieldType, Load, Mutation, Sequence, Validated,
+    FieldType, Mutation, Sequence, Validated,
 };
 use serde_json::{Value, json};
 
@@ -46,10 +46,6 @@ pub fn descriptors(v: &Validated) -> Value {
                 .collect::<Vec<_>>()
         );
     }
-    // Present only beside a declared Load, so other schemas keep their bytes.
-    if !v.loads.is_empty() {
-        descriptors["loads"] = loads(v);
-    }
     descriptors
 }
 
@@ -86,7 +82,7 @@ pub fn schema(v: &Validated) -> Value {
         .iter()
         .map(|e| json!({"name":e.name,"values":e.values}))
         .collect();
-    let mut schema = json!({
+    let schema = json!({
         "models": models,
         "enums": enums,
         "actions": v.actions.iter().map(|a| action(v, a)).collect::<Vec<_>>(),
@@ -105,9 +101,6 @@ pub fn schema(v: &Validated) -> Value {
         "prerequisites": prerequisites(v),
         "clientPolicies": mutations(v),
     });
-    if !v.loads.is_empty() {
-        schema["loads"] = loads(v);
-    }
     schema
 }
 
@@ -128,36 +121,6 @@ fn action(v: &Validated, a: &Action) -> Value {
     let outputs = outputs(v, &a.outputs);
     let sequence = a.sequence.as_ref().map(sequence);
     json!({"name":a.name,"version":a.version,"kind":a.kind,"inputs":inputs,"outputs":outputs,"sequence":sequence})
-}
-
-/// A Load descriptor: its value inputs, the retained enum snapshot they read
-/// against, and Model-list outputs. Never a `kind`, `sequence` or call option.
-fn load(v: &Validated, l: &Load) -> Value {
-    let used: std::collections::BTreeSet<&str> = l
-        .inputs
-        .iter()
-        .filter_map(|input| match input {
-            ActionInput::Value {
-                ty: FieldType::Enum(name),
-                ..
-            } => Some(name.as_str()),
-            _ => None,
-        })
-        .collect();
-    let enums: Vec<Value> = v
-        .enums
-        .iter()
-        .filter(|e| used.contains(e.name.as_str()))
-        .map(|e| json!({"name":e.name,"values":e.values}))
-        .collect();
-    json!({
-        "name":l.name,"version":l.version,
-        "inputs":inputs(&l.inputs),"outputs":outputs(v, &l.outputs),
-        "input":{"models":[],"enums":enums},"outputEnums":[],
-    })
-}
-fn loads(v: &Validated) -> Value {
-    json!(v.loads.iter().map(|l| load(v, l)).collect::<Vec<_>>())
 }
 
 fn inputs(inputs: &[ActionInput]) -> Vec<Value> {

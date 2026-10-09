@@ -15,7 +15,7 @@
 - Baseline: `71b14195b897bc8a42f19e0a83d59dfe8fc76677`.
 - Packages remain at 0.5.4 and the sync discriminator is 5.
 - Preserve the agreed component tree and implemented guarantees.
-- No Rust/SDK behavior, generated schemas, storage, published exports, native symbols, package versions, Capso, releases or deployments change.
+- No Rust/SDK behavior, generated schemas, storage, published exports, native symbols, package versions or Capso changes. Publish no package and deploy no application/backend; the existing Documentation workflow publishes the website after merge to main.
 - Keep `docs/superpowers/`, `.superpowers/` and original design records unchanged except the new documents for this task.
 - Preserve historical claims/dates; distinguish source inspection from executed evidence.
 - Local worktrees, caches, SYN-24 and SYN-25 are outside this PR.
@@ -65,7 +65,7 @@
 
 **Interface:** Current evidence tables cite existing assertions with their scope and limits. The archive retains past tables and execution dates.
 
-- [ ] Save each mixed page's pre-edit body in the mirrored archive hierarchy, clearly labelled as the baseline documentation snapshot. Preserve its old execution statements there.
+- [ ] Save each mixed page's pre-edit body in the mirrored archive hierarchy, clearly labelled as the baseline documentation snapshot. Preserve its old execution statements there. If the destination already contains the baseline page from Task 1, retain it; never replace an archived original with an edited current page.
 - [ ] Read current protocol fixtures/tests in `crates/protocols/tests/`, admission/delivery tests in `crates/server/tests/`, and the actual assertion sections of the SQLite scenarios being cited.
 - [ ] Replace missing SQLite names with relevant inspected `protocol05_*` scenarios, not by automated filename substitution. Keep current `query.rs`, `runtime_prerequisites.rs`, `store.rs` and `stream_upgrade.rs` evidence where relevant.
 - [ ] Describe current simulation from `crates/sim/src/{lib,rng,scenario05}.rs` and `tests/{scenario05,protocol05_coverage,mutation_versions05}.rs`. Remove claims about deleted random runners/shrinkers unless kept explicitly in history. Do not imply coverage from a filename alone.

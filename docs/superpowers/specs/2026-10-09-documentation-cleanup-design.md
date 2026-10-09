@@ -58,7 +58,7 @@ Paths below are relative to `docs/engineering/`. Their archive destinations pres
 - `channel-membership-release.md`
 - `brand-rename.md`, after current package/native naming guidance has been checked against the current entry points.
 
-Mixed testing pages are not moved wholesale out of the current tree. Preserve their pre-edit text as documentation snapshots in the same archive hierarchy, then rewrite the current pages. A snapshot is marked as mixed-period documentation at the baseline, not certified historical coverage.
+Mixed testing pages are not moved wholesale out of the current tree. Preserve their pre-edit text as documentation snapshots in the same archive hierarchy, then rewrite the current pages. A snapshot is marked as mixed-period documentation at the baseline, not certified historical coverage. Keep an already archived baseline page intact; do not overwrite it with a later edited snapshot.
 
 Current architecture/guarantee pages may link the archive when explaining a historical decision. Component navigation must not advertise retired APIs as available work.
 
@@ -75,7 +75,7 @@ Current architecture/guarantee pages may link the archive when explaining a hist
 
 ## Scope boundary
 
-This work changes documentation only. It does not alter Rust/SDK behavior, generated schemas, storage, published exports, native symbols, package versions, Capso, releases or deployments.
+This work changes documentation only. It does not alter Rust/SDK behavior, generated schemas, storage, published exports, native symbols, package versions or Capso. It publishes no package and deploys no application/backend. The existing Documentation workflow builds PR artifacts and publishes the website after merge to main.
 
 Preserve `docs/superpowers/`, `.superpowers/` and any original design record byte-for-byte except the new documents for this task. Local worktree deletion and build-cache cleanup are separate work. SYN-24 and SYN-25 remain separate tooling issues.
 

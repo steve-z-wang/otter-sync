@@ -14,7 +14,7 @@
 
 - Baseline: `71b14195b897bc8a42f19e0a83d59dfe8fc76677`.
 - Packages remain at 0.5.4 and the sync discriminator is 5.
-- No SDK API/export, generated API, serialization/error, native ABI, table/SQL, dependency-version, storage migration, Capso, publication or deployment changes.
+- No SDK API/export, generated API, serialization/error, native ABI, table/SQL, dependency-version, storage migration or Capso changes. Publish no package and deploy no application/backend; documentation edits follow the existing website publication workflow after merge.
 - Preserve current retirement diagnostics and historical JSON contract validation/reconciliation.
 - Preserve intentional server/client root exports and `axton_client::v05`; remove the four unnecessary file/module routes listed in the spec.
 - Keep original design notes, prior specs/plans, SYN-24 and SYN-25 outside the implementation diff.
@@ -98,7 +98,7 @@ if !d.loads.is_empty() {
 }
 ```
 
-Update the current method-namespace comment to describe Mutations and Queries. Keep `loads: vec![]` when constructing `axton_core::Schema`; that retained type still has a real history field.
+Update the current method-namespace comment to describe Mutations and Queries. Keep `OperationNames`, `method_name`, `ROUTE_MEMBERS` and their existing diagnostics: the current Mutation/Query validation loop also uses them. Keep `loads: vec![]` when constructing `axton_core::Schema`; that retained type still has a real history field.
 
 - [ ] In `generate.rs`, delete its validated `Load` import, both `if !v.loads.is_empty()` emission blocks and private `load`/`loads` helpers. Remove any resulting unnecessary `mut` on the local schema value. Keep current descriptor members and their ordering unchanged.
 - [ ] Search the compiler for remaining `Validated.loads`, `validate::Load` and `validate_load` references; expect none. Preserve Parse's `LoadDecl`/recognition, CLI flag refusals, Core history descriptors and `reconcile_load_history` unchanged.
@@ -118,7 +118,7 @@ Update the current method-namespace comment to describe Mutations and Queries. K
 - [ ] Correct `frontend_interface.rs` comments for Mutation operations, session callbacks and completions by tracing `runtime/transactions.rs`, `settlement05.rs` and their existing tests. Avoid claiming that completions are never persisted or that incoming custom store hooks remain available.
 - [ ] In Bootstrap/status DTO comments, distinguish retained serialized field names from current S/B/C-derived status. Keep all variants and `subscription_id` fields; their presence in current observers/SDKs is verified usage.
 - [ ] Update current source-owner links to Protocols and Backend interface; remove facade filenames from the live code map. Explain that retained Load JSON history and retired source rejection are separate compiler responsibilities. Preserve frozen design notes.
-- [ ] Review `git diff` to ensure this task changes comments/docs only. Run `git diff --check` and the read-only path audit in the documentation plan; verify changed heading anchors. Commit this task.
+- [ ] Review `git diff` to ensure this task changes comments/docs only. Run `git diff --check` and verify each changed owner link/heading anchor. Before the documentation PR merges, leave its unrelated baseline link findings to that lane; run the complete path audit in Task 4 after integration. Commit this task.
 
 ## Task 4: Validate assembled behavior and prepare the cleanup PR
 
@@ -126,7 +126,7 @@ Update the current method-namespace comment to describe Mutations and Queries. K
 
 **Interface:** Accepted refactor preserves contracts across Rust, SDKs, native adapters, real PostgreSQL, SQLite and installed artifacts.
 
-- [ ] Rebase onto the current main after the documentation PR if it has merged. Resolve owner-link changes to the new canonical pages; do not reintroduce moved documents.
+- [ ] After the documentation PR merges, rebase onto the current main. Resolve owner-link changes to the new canonical pages; do not reintroduce moved documents. Run the complete read-only path audit from the documentation plan and expect zero missing current local targets. Code implementation may proceed earlier; final integration uses the merged documentation layout.
 - [ ] Run `bash scripts/test.sh` once on the final source. It rebuilds native carriers, runs Rust tests/strict Clippy, protocol/SDK fixtures, retained Host tests, real PostgreSQL persistence, joined host/capacity, Dart and installed-package checks. Record the final tested commit and exit code.
 - [ ] If the unchanged release inventory check trips over older nested worktrees (SYN-25), use a clean isolated checkout for the same gate. Preserve those worktrees and report the tooling limit; do not broaden this PR or skip a genuine root version mismatch.
 - [ ] Compare against the base: `fixtures/protocol/`, published manifests/exports, ABI symbols, SQL/DDL and generated fixture content must retain their contracts. Review any generated diff individually; no expected runtime behavior changes are accepted.

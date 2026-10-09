@@ -55,7 +55,7 @@ Remove from `crates/compiler/src/generate.rs`:
 - conditional emission of `loads` from `Validated` in `descriptors()` and `schema()`;
 - the private `load()` and `loads()` emitters.
 
-Keep the exact current retirement diagnostic: `Load declarations were removed in 0.4; use Bootstrap or a named Query`. Keep Parse's recognition of retired Load syntax so callers still receive that useful diagnostic. Keep the CLI's rejection of retired Load history flags.
+Keep the exact current retirement diagnostic: `Load declarations were removed in 0.4; use Bootstrap or a named Query`. Keep Parse's recognition of retired Load syntax so callers still receive that useful diagnostic. Keep the CLI's rejection of retired Load history flags. `OperationNames`, `method_name` and `ROUTE_MEMBERS` also validate current Mutation/Query names; retain these shared helpers and existing diagnostics when removing `validate_load`.
 
 Keep `crates/core/src/loads.rs`, `Schema.loads`, `Schema::load`, `validate_loads`, `compiler/history.rs::reconcile_load_history` and their tests. They validate retained JSON contracts. The compiler history fixture explicitly constructs saved Load descriptors from Query descriptors; it does not need the unreachable validated Load type.
 
@@ -72,7 +72,7 @@ No current generated descriptor gains a `loads` key, and no retained artifact lo
 
 ## Scope boundary
 
-No SDK API/export change, generated API redesign, serialization/error change, native ABI change, table/SQL change, dependency-version change, storage migration, Capso change, publication or deployment.
+No SDK API/export change, generated API redesign, serialization/error change, native ABI change, table/SQL change, dependency-version change, storage migration, Capso change, package publication or application/backend deployment. Documentation edits follow the existing website publication workflow after merge.
 
 Keep original design notes and past specs/plans unchanged. SYN-24 crash diagnostics and SYN-25 release inventory filtering are separate changes. Do not fold in engine algorithms, class splitting, mass naming changes or unrelated dead-code hunts.
 
@@ -89,6 +89,6 @@ If verification uncovers another live caller or a contract dependency, preserve 
 
 ## Delivery
 
-One internal cleanup PR. Rust facade removal, compiler cleanup and comment correction are separate reviewable commits. It may be prepared alongside the documentation PR; rebase after the documentation move and update only source-owner references it actually changes.
+One internal cleanup PR. Rust facade removal, compiler cleanup and comment correction are separate reviewable commits. It may be prepared alongside the documentation PR. Merge the documentation PR first, then rebase this PR and update only source-owner references it actually changes. Before that merge, inspect changed links locally; the complete current-document path audit belongs to final integration after the documentation cleanup.
 
 Implementation steps: [plan](../plans/2026-10-09-internal-cleanup.md).

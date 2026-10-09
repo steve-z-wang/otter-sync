@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionState {
     pub stream: String,
+    /// The bound Store registration identity (currently 1).
     pub subscription_id: u64,
-    /// The boundary the first initialization committed; `None` until then.
+    /// Starting boundary S; `None` until initialization commits.
     pub starting_cursor: Option<u64>,
-    /// How far delivery has committed, at or above `starting_cursor`.
+    /// Committed delivery cursor C; `None` before initialization.
     pub cursor: Option<u64>,
 }

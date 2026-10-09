@@ -2,26 +2,22 @@
 use serde::{Deserialize, Serialize};
 pub const SUBSCRIPTION_CLOSED: &str = "subscription.closed";
 
-// How far a Stream's historical load has got. The names are the stored column
-// values, and the phase of a Stream that never asked for one is
-// [`BootstrapPhase::NotRequested`].
+// Retained Bootstrap phase vocabulary. Bound Store status currently derives
+// Requested or Complete from the starting boundary S and Bootstrap cursor B.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BootstrapPhase {
-    // No load was ever requested for this registration.
+    // Retained phase for a Bootstrap that was not requested.
     NotRequested,
-    // Registered and waiting: for the subscription's origin, or for the
-    // scheduler's next page.
+    // B has not reached S, or S is not initialized.
     Requested,
-    // At least one page committed and the interval is not finished.
+    // Retained intermediate phase for historical progress.
     Loading,
-    // The interval is finished and the barrier H is fixed; ordinary delivery
-    // has not reached it yet.
+    // Retained intermediate phase for delivery catching up to a barrier.
     CatchingUp,
-    // `B = S` and `L >= H`: the historical interval and the fixed barrier are
-    // both processed.
+    // S is initialized and B equals S.
     Complete,
-    // The run ended on a failure that is terminal until an explicit retry.
+    // Retained terminal failure phase.
     Failed,
 }
 impl BootstrapPhase {
@@ -45,19 +41,20 @@ pub struct BootstrapError {
     pub message: String,
 }
 
-// One Stream's load, as the ledger holds it. `cursor` is B and `barrier` is H;
-// S and L remain in the bound Store status.
+// Bootstrap view of the bound Store. Serialized names are retained:
+// `cursor` is B and `barrier` is S; delivery cursor C is in SubscriptionState.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapState {
     pub stream: String,
+    // The bound Store registration identity (currently 1).
     pub subscription_id: u64,
     pub state: BootstrapPhase,
-    // The retry fence: every call and every response belongs to one run.
+    // Retained observer run identity (currently 1).
     pub run: u64,
-    // B, the committed historical progress.
+    // Committed B, or zero before Bootstrap progress exists.
     pub cursor: u64,
-    // H, the head the terminal page observed; `None` until it commits.
+    // Starting boundary S; `None` before initialization.
     pub barrier: Option<u64>,
     pub error: Option<BootstrapError>,
 }

@@ -8,8 +8,8 @@
 //! lifecycles - `transaction`, `connect`, `connection`, `invoke`, `fetch`,
 //! `rebuild`, `streamSubscribe`, `streamBootstrap`, `watch`, `watchSql`
 //! and `unwatch` - are the runtime's own and never reach [`execute`].
-use super::protocol::{Command, TransactionCommand};
 use crate::*;
+use axton_protocols::client_bridge::{Command, TransactionCommand};
 use serde_json::{Value, json};
 
 // Execute one task command against the committed client.

@@ -2,9 +2,7 @@
 //! from source reports the offending declaration; the core descriptor check
 //! near the end is a backstop at the end of the input. No descriptor is
 //! assembled here: [`crate::generate`] renders [`Validated`].
-use crate::parse::{
-    ActionInputDecl, Declarations, FieldDecl, LoadDecl, ModelDecl, Pos, SlotDecl, at,
-};
+use crate::parse::{ActionInputDecl, Declarations, FieldDecl, ModelDecl, Pos, SlotDecl, at};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,9 +24,6 @@ pub struct Validated {
     pub prerequisites: Vec<Prerequisite>,
     pub mutations: Vec<Mutation>,
     pub actions: Vec<Action>,
-    /// Native Loads, in source order: separate from `actions` so no Action
-    /// route or kind can describe one.
-    pub loads: Vec<Load>,
     /// Every `@deprecated`, in source order. A generated-code notice only
     /// ([#91](https://github.com/zanminwang/axton/issues/91)): Generate keeps
     /// it beside the descriptors, never inside them, so no runtime reads it.
@@ -208,15 +203,6 @@ pub struct Action {
     pub inputs: Vec<ActionInput>,
     pub outputs: Vec<ActionOutput>,
     pub sequence: Option<Sequence>,
-}
-/// `load Name(inputs) { outputs }`: value inputs only, and every output a
-/// non-null list of Model identities the handler enumerates.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Load {
-    pub name: String,
-    pub version: u64,
-    pub inputs: Vec<ActionInput>,
-    pub outputs: Vec<ActionOutput>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionInput {
@@ -722,105 +708,6 @@ const ROUTE_MEMBERS: &[&str] = &[
     "runtimeType",
     "noSuchMethod",
 ];
-fn validate_load(
-    decl: &LoadDecl,
-    enums: &[Enum],
-    models: &[Model],
-    declared_names: &[(&str, Pos)],
-    operation_names: &mut OperationNames,
-) -> Result<Load, String> {
-    let name = &decl.name;
-    // Historical Load descriptors retain their published name validation.
-    if axton_core::RESERVED_LOAD_NAMES
-        .iter()
-        .any(|r| name.eq_ignore_ascii_case(r))
-        || ROUTE_MEMBERS.contains(&method_name(name).as_str())
-    {
-        return Err(at(decl.pos, format!("Load name {name} is reserved")));
-    }
-    if declared_names.iter().any(|(declared, _)| declared == name) {
-        return Err(at(
-            decl.pos,
-            format!("Load {name} collides with a model or enum"),
-        ));
-    }
-    operation_names.insert(name, decl.pos)?;
-    let mut inputs = Vec::new();
-    let mut input_names = BTreeSet::new();
-    for input in &decl.inputs {
-        match input {
-            ActionInputDecl::Model(s) => {
-                return Err(at(
-                    s.pos,
-                    format!(
-                        "Load {name} cannot take Model operand {}; Model operands belong to mutations",
-                        s.name
-                    ),
-                ));
-            }
-            ActionInputDecl::Value(f) => {
-                if !input_names.insert(f.name.as_str()) {
-                    return Err(at(f.pos, format!("duplicate Load input {}", f.name)));
-                }
-                inputs.push(ActionInput::Value {
-                    name: f.name.clone(),
-                    ty: action_value_type(f, enums, "Load")?,
-                    nullable: f.nullable,
-                    list: f.list,
-                });
-            }
-        }
-    }
-    let mut outputs = Vec::new();
-    let mut output_names = BTreeSet::new();
-    for output in &decl.outputs {
-        let f = &output.field;
-        if !output_names.insert(f.name.as_str()) {
-            return Err(at(f.pos, format!("duplicate Load output {}", f.name)));
-        }
-        reject_operation_default(f)?;
-        let Some(model) = models.iter().find(|m| m.name == f.type_name) else {
-            // A value type is never a Load output; an unknown one says so first.
-            action_value_type(f, enums, "Load")?;
-            return Err(at(
-                f.pos,
-                format!(
-                    "Load {name} output {} must be a non-null list of Model identities",
-                    f.name
-                ),
-            ));
-        };
-        if !f.attributes.is_empty() || f.deprecated.is_some() {
-            return Err(at(
-                f.pos,
-                format!("unsupported Load output directive on {}", f.name),
-            ));
-        }
-        if !f.list || f.nullable {
-            return Err(at(
-                f.pos,
-                format!(
-                    "Load {name} output {} must be a non-null list of Model identities",
-                    f.name
-                ),
-            ));
-        }
-        outputs.push(ActionOutput {
-            name: f.name.clone(),
-            ty: ActionOutputType::Model(model.name.clone()),
-            cardinality: Cardinality::List,
-            source: ActionOutputSource::HandlerModelIdentity,
-            model_read_version: Some(model.version),
-        });
-    }
-    Ok(Load {
-        name: name.clone(),
-        version: decl.version,
-        inputs,
-        outputs,
-    })
-}
-
 /// Check the declarations and resolve them into the typed schema.
 /// Top-level identifiers the generated TypeScript and Dart clients, or the
 /// runtime packages they import, declare. A model or enum with one of these
@@ -1525,7 +1412,7 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         m.sequence = sequence;
     }
     let mut actions = Vec::new();
-    // Mutations, Queries and Loads share one namespace of generated method names.
+    // Mutations and Queries share one namespace of generated method names.
     let mut operation_names = OperationNames::default();
     for decl in &d.actions {
         let label = kind_label(decl.kind);
@@ -1707,16 +1594,6 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         }
         actions[i].sequence = Some(Sequence { after: calls });
     }
-    let mut loads = Vec::new();
-    for decl in &d.loads {
-        loads.push(validate_load(
-            decl,
-            &enums,
-            &models,
-            &declared_names,
-            &mut operation_names,
-        )?);
-    }
     for (c, pos) in unique_constraints.iter().zip(&constraint_pos) {
         let m = model(&c.model).unwrap();
         if c.fields.is_empty()
@@ -1737,7 +1614,6 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         prerequisites,
         mutations,
         actions,
-        loads,
         deprecations: {
             let mut list = vec![];
             for e in &d.enums {

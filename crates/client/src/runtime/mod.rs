@@ -8,13 +8,12 @@ mod effects;
 mod lanes;
 mod observers;
 mod prerequisites;
-pub mod protocol;
 mod sql_watches;
 mod tasks;
 mod transactions;
 mod unsent;
 
-pub use protocol::*;
+pub use axton_protocols::client_bridge::*;
 
 use crate::{Client, ClientStore, Result};
 use serde_json::{Value, json};
@@ -39,9 +38,7 @@ pub struct ClientRuntime<S: ClientStore> {
     directs: direct::Directs,
     // The prerequisite handlers registered at open and their scheduler.
     prerequisites: prerequisites::Prerequisites,
-    // The Load worker, its batches in flight, and the Load handles'
-    // observers and waiters.
-    // Subscription and watch observers, and the Bootstrap waiters.
+    // Bound Store status and watch observers, and Bootstrap waiters.
     observers: observers::Observers,
     // The unsent-work observers.
     unsent: unsent::Unsent,
@@ -71,8 +68,6 @@ enum Lifecycle {
 }
 
 impl<S: ClientStore + 'static> ClientRuntime<S> {
-    // [`Client::open_at`] under the runtime. Errors are the open errors.
-
     // Wrap an already opened client.
     pub fn new(client: Client<S>) -> Self {
         let capability_namespace = Some(uuid::Uuid::new_v4().to_string());
@@ -97,13 +92,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             lifecycle: Lifecycle::Open,
         }
     }
-    // Register schema Models whose incoming authority requires a callback.
-    // Names are validated once and remain fixed for the runtime lifetime.
-
-    // Configure an opened runtime before any task is admitted.
-
-    // What a successful open answers: the client id and the schema check's
-    // outcome, as the SDKs report it in `status()`.
+    // What a successful open answers: the client id and bound Store context.
     pub fn opened(&mut self) -> Value {
         let mut opened = json!({
             "clientId": self.client.client_id(),

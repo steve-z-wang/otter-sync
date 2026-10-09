@@ -16,7 +16,7 @@ pub struct Mutation {
     pub call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<Value>,
-    // The Action call's store policy; only meaningful with `call_id`.
+    // The named Mutation's operations, derived from its normalized input.
     pub operations: Vec<Operation>,
     #[serde(default)]
     pub companion: Vec<Operation>,
@@ -67,7 +67,8 @@ pub struct ApplyReport {
     pub stale: bool,
     pub cursors: BTreeMap<String, u64>,
     pub reports: Vec<Report>,
-    // Invocation outcomes are emitted after settlement and never stored locally.
+    // Committed settlement outcomes; retained queue outcomes also support
+    // `Client::call_completion05` after reopen.
     pub completions: Vec<CallCompletion>,
 }
 impl ApplyReport {
@@ -86,8 +87,6 @@ pub(crate) struct Session {
     counter: u64,
     // Ordinals of the calls submitted in this transaction.
     submitted: BTreeSet<u64>,
-    // The session delivers incoming authority (`prepare_store`): its store
-    // hooks are local-only and submit no Mutation.
 }
 
 struct SessionSavepoint {
@@ -119,16 +118,8 @@ pub struct AbandonedCall {
     pub frozen: bool,
 }
 
-// Marker a transaction leaves in its changed set when it subscribes or
-// unsubscribes a stream; stripped before the set reaches watchers.
-
-// Marker a transaction leaves in its changed set when it changes a Stream's
-// bootstrap state ([#151](https://github.com/zanminwang/axton/issues/151)).
-// A load request changes no membership, so - unlike [`SUBSCRIPTION_MARK`] - it
-// bumps neither the subscription generation nor a stream epoch: registering a
-// load must not make the open live session stale or a pull in flight. It is
-// stripped like the other mark, and the Streams it named are read back through
-// [`Client::last_bootstrap_streams`].
+// Marker for a committed change to a Stream's Bootstrap state; stripped
+// before table watchers run and exposed through `last_bootstrap_streams`.
 pub(crate) const BOOTSTRAP_MARK: &str = "axton_bootstrap:";
 
 // Take every mark with `prefix` out of `changed` and answer with the names
@@ -160,8 +151,6 @@ impl<S: ClientStore> Client<S> {
         &self.last_changed
     }
     // The Streams whose bootstrap state the last committed transaction changed.
-    // The scheduler reads its work from [`Client::bootstrap_tasks`]; this says
-    // whether a commit touched any of it at all.
     pub fn last_bootstrap_streams(&self) -> &BTreeSet<String> {
         &self.last_bootstrap
     }
@@ -492,11 +481,6 @@ impl<S: ClientStore> Client<S> {
         })
     }
 
-    // Every retained refusal with the act as submitted, oldest first
-    // ([#186](https://github.com/zanminwang/axton/issues/186)).
-
-    // One retained refusal, or `None`.
-
     // The unsent acts blocked on a terminally failed task.
     pub fn failed_acts(&mut self) -> Result<Vec<FailedAct>> {
         self.view(|e| e.failed_acts())
@@ -505,10 +489,6 @@ impl<S: ClientStore> Client<S> {
     pub fn retry_tasks(&mut self, keys: &[String]) -> Result<()> {
         self.write(|e| e.retry_tasks(keys))
     }
-    // Remove unsent work and its optimism without recording a refusal for
-    // it; lifecycle dependents are refused. Answers the removed Calls'
-    // completions.
-
     pub fn record_status(&mut self, key: &RecordKey) -> Result<Value> {
         let key = self.schema.record_key(&key.model, &key.identity)?;
         self.view(|e| {
@@ -562,10 +542,9 @@ impl<S: ClientStore> Client<S> {
 pub struct ClientTransaction<'a, S: ClientStore> {
     pub(crate) engine: Engine<'a, S>,
     depth: u64,
-    // Ordinals of the calls [`Self::submit_mutation`] queued in this
+    // Ordinals of the calls [`Self::submit_mutation05`] queued in this
     // transaction and not rolled back: the only calls that take companions.
     pub(crate) submitted: &'a mut BTreeSet<u64>,
-    // A store hook's transaction: local reads and writes only.
 }
 impl<S: ClientStore> ClientTransaction<'_, S> {
     pub fn read(&mut self, key: &RecordKey) -> Result<Option<Value>> {
@@ -593,13 +572,6 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
             }
         }
     }
-
-    // Submit a named Mutation as part of this transaction. Its args are
-    // made canonical once (generated values filled, normalized, bindings
-    // and store policy validated) and its call ID, args and inferred
-    // optimism are written here, so they commit or roll back with the rest
-    // of the transaction; nothing is sendable before commit. Queries are
-    // refused: only the standalone entry queues them.
 
     pub(crate) fn preview_callback(&mut self, operation: Operation) -> Result<Vec<Operation>> {
         self.savepoint(|tx| tx.engine.preview_callback(operation))
@@ -643,22 +615,12 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
     pub fn direct(&mut self, operation: Operation) -> Result<()> {
         self.savepoint(|tx| tx.engine.direct(operation))
     }
-    // Dismiss a retained refusal as part of this transaction
-    // ([#205](https://github.com/zanminwang/axton/issues/205)).
-
     // Make the tasks pending again as part of this transaction; nothing runs
     // them before it commits.
     pub fn retry_tasks(&mut self, keys: &[String]) -> Result<()> {
         self.resolution()?;
         self.savepoint(|tx| tx.engine.retry_tasks(keys))
     }
-    // Discard unsent act `ordinal` as part of this transaction: its
-    // optimism is gone for every later read and submission here, and a
-    // later submission is neither planned over it nor sequenced after it.
-    // Answers the removed Calls' completions, final only once the
-    // transaction commits.
-
-    // A store hook's transaction resolves no unsent work.
     fn resolution(&self) -> Result<()> {
         Ok(())
     }

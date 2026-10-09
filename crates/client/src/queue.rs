@@ -137,14 +137,6 @@ impl<S: ClientStore> Engine<'_, S> {
     ) -> Result<()> {
         self.insert_owned05(ordinal, position, kind, None, op)
     }
-    // Store a call with its operations grouped by kind: wire, companion,
-    // then effect.
-
-    // Store a call whose operations take their positions from `ordered`,
-    // the local order they were applied in: a cascade delete sits at the
-    // delete that caused it, before the call's later operations. `ordered`
-    // holds exactly the call's wire, companion and effect operations.
-
     pub fn add_effect(&mut self, ordinal: u64, op: &Operation) -> Result<()> {
         self.append_op(ordinal, OpKind::Effect, op)
     }
@@ -354,15 +346,6 @@ impl<S: ClientStore> Engine<'_, S> {
             )?
             .is_some())
     }
-
-    // The push that was frozen and not yet completed, if any. Completion
-    // deletes a push's rows, so any assigned push is in flight; the queue
-    // never holds more than one.
-
-    // The sequence of the last push a receipt completed. A receipt at or
-    // below it is a duplicate and changes nothing.
-
-    // Remember that `push` completed and forget its frozen declaration.
 
     pub fn prerequisite_keys(&mut self) -> Result<Vec<(String, Option<String>)>> {
         let rows = self.rows(

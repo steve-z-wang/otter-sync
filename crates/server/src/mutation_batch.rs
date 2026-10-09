@@ -2,12 +2,16 @@
 //! are deliberately independent of the transport's complete Batch loop.
 use crate::{
     Config, Error, Host, Result,
-    host::{Acknowledged, HandledAction, HostExt, HostRequest, Loaded, LoaderMode, MemberKey},
+    backend_interface::HostExt,
     internal,
     protocol_v05::{self, Publication05},
     request_invalid, storage_invalid,
 };
 use axton_core::{ActionInputDescriptor, RecordKey};
+use axton_protocols::server_bridge::members::{MemberPosition, PositionKind};
+use axton_protocols::server_bridge::{
+    Acknowledged, HandledAction, HostRequest, Loaded, LoaderMode, MemberKey,
+};
 use axton_protocols::sync as v05;
 use serde::Deserialize;
 use serde_json::json;
@@ -181,7 +185,7 @@ pub(crate) async fn execute(
             let mut keys = crate::action_results::snapshot_keys(config, action, &args, &outputs)?;
             keys.extend(inputs.values().cloned());
             prepare(config, owner, &models, keys, &host).await?;
-            let positions:Vec<Option<crate::stream_members::MemberPosition>>=protocol_v05::call(raw_host,json!({"op":"targetPositions","stream":request.context.stream,"records":inputs.values().map(MemberKey::from_key).collect::<Vec<_>>()})).await?;
+            let positions:Vec<Option<MemberPosition>>=protocol_v05::call(raw_host,json!({"op":"targetPositions","stream":request.context.stream,"records":inputs.values().map(MemberKey::from_key).collect::<Vec<_>>()})).await?;
             if positions.len() != inputs.len() {
                 return Err(storage_invalid("target position count mismatch"));
             }
@@ -208,7 +212,7 @@ pub(crate) async fn execute(
                     state,
                 };
                 targets.push(match position {
-                    Some(p) if p.kind == crate::stream_members::PositionKind::Upsert => {
+                    Some(p) if p.kind == PositionKind::Upsert => {
                         if p.key != *key || p.stream != request.context.stream {
                             return Err(storage_invalid("target position mismatch"));
                         }

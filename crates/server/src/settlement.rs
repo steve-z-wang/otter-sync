@@ -1,11 +1,12 @@
 //! One normalized settlement: canonical stream locks, bulk guards and final tracking.
-use crate::host::{
-    Acknowledged, GuardMode, GuardRecord, Guards, HostExt, HostRequest, MemberKey, Positions,
-    RecordRef, StreamIntent, Tracking, TrackingPair,
-};
-use crate::stream_members::{MemberDelta, MemberPosition, PositionKind};
+use crate::backend_interface::HostExt;
 use crate::{Config, Error, Host, Result, code, internal};
 use axton_core::RecordKey;
+use axton_protocols::server_bridge::members::{MemberDelta, MemberPosition, PositionKind};
+use axton_protocols::server_bridge::{
+    Acknowledged, GuardMode, GuardRecord, Guards, HostRequest, MemberKey, Positions, RecordRef,
+    StreamIntent, Tracking, TrackingPair,
+};
 use std::collections::{BTreeMap, BTreeSet};
 pub(crate) type Changes = BTreeMap<String, RecordKey>;
 pub(crate) fn unregistered(model: &str) -> Error {

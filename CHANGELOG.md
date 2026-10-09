@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/zanminwang/axton/compare/v0.5.2...v0.5.3) (2026-10-09)
+
+
+### Bug Fixes
+
+* separate full Bootstrap enrollment from read-page budgets ([#263](https://github.com/zanminwang/axton/issues/263)) ([#264](https://github.com/zanminwang/axton/issues/264)) ([c5b5508](https://github.com/zanminwang/axton/commit/c5b5508cdcb77aebec25c2627c42eb4f6936fef7))
+
 ## [0.5.2](https://github.com/zanminwang/axton/compare/v0.5.1...v0.5.2) (2026-10-08)
 
 

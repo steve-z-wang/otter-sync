@@ -11,3 +11,5 @@ Persistence implements the strict Rust host operation contract inside the applic
 ## 10. Quality Requirements
 
 Changes must preserve the component boundary and the protocol’s commit/failure rules. The joined native gate `integration/v05-sdk/run-host.sh` exercises the generated client, real HTTP/WebSocket backend and SQLite. Installed-package and mobile evidence are separate adoption gates.
+
+Bulk identity guards, member application and positional reads use bounded SQL batches inside the same application transaction. Guards retain canonical order across mode changes; positional reads retain duplicate inputs and missing targets. [PostgreSQL batching tests](../../../../integration/persistence/server/persistence-batching.test.mjs) check query growth at 2,055 identities, result correlation, cursor reuse, savepoint rollback and safe counters. Alternating guard modes require separate runs to preserve lock order; cursor reservation remains one statement per published Stream.

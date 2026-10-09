@@ -34,11 +34,11 @@ The three source lanes can run in parallel. Each keeps its existing package-root
 
 - [x] Historical baseline: `cargo test -p axton-client -p axton-server --locked` passed on 0.5.2 on 2026-10-08 (`/private/tmp/axton-protocol-bridges-baseline.log`). This does not verify the updated branch or refactor.
 - [x] Before source edits, Client/Server baseline passed on `c87188ae` (identical 0.5.4 source), exit 0; `/private/tmp/axton-protocol-bridges-v054-baseline.log`.
-- [ ] Move `crates/core/src/protocol_v05.rs` and `protocol_v05/{delivery,mutation}.rs` to `crates/protocols/src/sync.rs` and `sync/`, and their existing tests to the new crate.
-- [ ] Move `crates/client/src/runtime/protocol.rs` to `crates/protocols/src/client_bridge/mod.rs`. Move Operation, Readiness, Report and QuerySpec DTOs with it; keep query execution and mutation state in Client.
-- [ ] Move the contract portion of `crates/server/src/host.rs`, HandlerContext, stream-member DTOs and structured error carriers into `server_bridge`. Keep `HostExt::call_typed` in `crates/server/src/backend_interface.rs`.
-- [ ] Add workspace/path dependencies, update imports and lockfiles; retain existing runtime facade paths through re-exports.
-- [ ] Run `cargo test -p axton-protocols --locked` and the focused Client/Server tests; the final host gate runs workspace tests and strict Clippy.
+- [x] Move `crates/core/src/protocol_v05.rs` and `protocol_v05/{delivery,mutation}.rs` to `crates/protocols/src/sync.rs` and `sync/`, and their existing tests to the new crate.
+- [x] Move `crates/client/src/runtime/protocol.rs` to `crates/protocols/src/client_bridge/mod.rs`. Move Operation, Readiness, Report and QuerySpec DTOs with it; keep query execution and mutation state in Client.
+- [x] Move the contract portion of `crates/server/src/host.rs`, HandlerContext, stream-member DTOs and structured error carriers into `server_bridge`. Keep `HostExt::call_typed` in `crates/server/src/backend_interface.rs`.
+- [x] Add workspace/path dependencies, update imports and lockfiles; retain existing runtime facade paths through re-exports.
+- [x] Run `cargo test -p axton-protocols --locked` and the focused Client/Server tests; the final host gate runs workspace tests and strict Clippy.
 
 **Concrete edits:** Add `crates/protocols/Cargo.toml` and `src/lib.rs` with `pub mod sync`, `client_bridge`, `server_bridge`. Depend only on `axton-core`, serde/serde_json and the existing hashing library. Register the crate in the workspace. Update client/server and every workspace consumer of `v05`, including SQLite, simulation and binding tests. Update the separately managed `bindings/node/Cargo.lock` as well as the workspace lock.
 
@@ -50,11 +50,11 @@ Move `OperationKind` and `ReportKind` with their DTOs. Keep pure constructors su
 
 ## 2. Separate the SDK source owners
 
-- [ ] Move frontend packages to `packages/frontend/` and backend packages to `packages/backend/`.
-- [ ] Group frontend API modules and bridge/transport implementations separately; retain public package entry points.
-- [ ] Separate the backend native invocation adapter from API construction; keep the host callback bound to the original transaction/session.
-- [ ] Update import paths, generated fixtures, package manifests, build/CI runners, Dart tooling and release pack paths. Regenerate the npm workspace lock without changing third-party pins.
-- [ ] Rebuild the Rust workspace and Node addon, then run TypeScript checks, JS/RN binding suites, Dart checks and the host-operation fixture suite.
+- [x] Move frontend packages to `packages/frontend/` and backend packages to `packages/backend/`.
+- [x] Group frontend API modules and bridge/transport implementations separately; retain public package entry points.
+- [x] Separate the backend native invocation adapter from API construction; keep the host callback bound to the original transaction/session.
+- [x] Update import paths, generated fixtures, package manifests, build/CI runners, Dart tooling and release pack paths. Regenerate the npm workspace lock without changing third-party pins.
+- [x] Rebuild the Rust workspace and Node addon, then run TypeScript checks, JS/RN binding suites, Dart checks and the host-operation fixture suite.
 
 **Frontend modules:** Move the Node client's public operations and language objects into `api/`, and `bridge.mts`, transport, connection and live-effect execution into `bindings/`. Apply the same ownership to Dart and React Native. Keep public entry files forwarding the same exports. Keep Dart transaction scopes, callback zones, provisional Call behavior and native finalizers intact.
 
@@ -80,10 +80,10 @@ Use the existing Dart setup and native-library environment from `docs/engineerin
 
 ## 3. Align documentation and accept
 
-- [ ] Update the living architecture tree/graph/code map and child indexes with the agreed names and actual source owners.
-- [ ] Add concise Client bridge / Server bridge documents and frontend/backend SDK indexes; verify changed links.
-- [ ] Run the full host gate and installed-package checks. Inspect the diff for changed wire behavior, duplicate implementations, leaked runtime dependencies and historical-document changes.
-- [ ] Record executed evidence, commit the refactor and open a reviewable PR. Attach the PR to this conversation; report any remaining release work separately.
+- [x] Update the living architecture tree/graph/code map and child indexes with the agreed names and actual source owners.
+- [x] Add concise Client bridge / Server bridge documents and frontend/backend SDK indexes; verify changed links.
+- [x] Run the full host gate and installed-package checks. Inspect the diff for changed wire behavior, duplicate implementations, leaked runtime dependencies and historical-document changes.
+- [x] Record executed evidence, commit the refactor and open a reviewable PR. Attach the PR to this conversation; report any remaining release work separately.
 
 **Documentation edits:** `docs/engineering/architecture.md` gets the agreed tree, graph and code map. Protocol child docs cover Sync, Client bridge and Server bridge. Frontend and Backend SDK docs each expose API and Bindings. Rust interface docs link to the actual dispatch/Host implementation. Keep existing website SDK guides and package names working.
 
@@ -98,6 +98,10 @@ git diff --check
 
 ## Current phase
 
-Steve approved implementation on 2026-10-09. Three isolated source lanes are underway; the parent owns integration and acceptance. Progress lives in SYN-23 and the ignored local execution ledger. Merging the refactor and merging/publishing a release remain separate operations; a new release follows `docs/engineering/releasing.md`.
+Steve approved implementation and merge after acceptance on 2026-10-09. All three source lanes are integrated and independently reviewed. The complete local host gate passed, including real PostgreSQL, generated APIs, Dart, end-to-end and installed npm/Dart packages. Final review path findings were corrected and accepted. macOS/Linux CI on the final commit remains required before merge. Progress and final CI evidence live in SYN-23 and PR #269. Package publication and Capso migration are outside this task; a later release follows `docs/engineering/releasing.md`.
 
 Readiness review on 2026-10-09 checked the actual 0.5.4 source and an independent read-only review found no blocking design gap. The existing docs-only branch was rebased onto the baseline above. This is planning evidence, not implementation or test acceptance.
+
+Executed acceptance on 2026-10-09: `bash scripts/test.sh` exited 0 with the integrated implementation and review fixes (`402dbe7a`), recorded in `/private/tmp/axton-protocol-host-gate.log`. The documentation checker also passed independently. Public Node export names matched the 0.5.4 baseline; protocol fixture payloads and third-party npm pins were unchanged. Native/installed package round trips used the moved API/Bindings modules. The final cross-platform CI result is recorded on the PR rather than inferred from these local checks.
+
+The initial Linux PR run exposed a preexisting multi-device test ordering race: device A settlement and device B initial Bootstrap do not fence B subsequent Stream delivery. A deterministic held/released-delivery reproduction confirmed the separate boundaries. Test-only commit `218b2909` explicitly starts B before publication and waits for its canonical state; the focused case and complete affected SDK host suite passed (1/1 and 21/21). Production synchronization code is unchanged.

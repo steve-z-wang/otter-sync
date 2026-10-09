@@ -40,7 +40,7 @@ export const RETRYABLE_SQLSTATES: ReadonlySet<string> = new Set([
  * measurement: on near-empty framework tables, where page-level predicate
  * locks make transactions on disjoint rows conflict, a shorter wait left
  * noticeably more calls exhausting their retries ([Persistence
- * §11](../../../docs/engineering/architecture/server/persistence.md)).
+ * §11](../../../../docs/engineering/architecture/server/persistence.md)).
  */
 export const RETRY_BACKOFF_BASE_MS = 20;
 /** No single retry waits 400 milliseconds or more, however many `retries` allow. */

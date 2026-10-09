@@ -4,7 +4,7 @@ import {
   type RuntimeStream,
   type RuntimeLoadStream,
   type RuntimeInvalidate,
-} from "./stream.mts";
+} from "../api/stream.mts";
 import type {
   StreamIntent,
   TrackIntent,
@@ -20,7 +20,7 @@ export interface RecordRef {
   readonly model: string;
   readonly identity: object;
 }
-export type { RuntimeInvalidate } from "./stream.mts";
+export type { RuntimeInvalidate } from "../api/stream.mts";
 export interface EffectCollector {
   readonly invalidate: RuntimeInvalidate;
   stream(names: string | readonly string[]): RuntimeStream;

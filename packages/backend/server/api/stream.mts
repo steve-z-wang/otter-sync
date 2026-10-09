@@ -1,5 +1,8 @@
 /** Owned synchronous Stream declarations; the engine settles their meaning. */
-import type { StreamIntent, HostRecordRef } from "./host-contract.mts";
+import type {
+  StreamIntent,
+  HostRecordRef,
+} from "../bindings/host-contract.mts";
 type Namespace<R> = ((records: unknown) => R) & {
   readonly [model: string]: (ids: unknown) => R;
 };

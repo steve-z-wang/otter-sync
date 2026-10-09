@@ -1,6 +1,8 @@
+import type { BackendDescriptor } from "./schema.mts";
+import { Session } from "../bindings/session.mts";
+import { createHost, type HostDependencies } from "../bindings/host.mts";
 import type { RuntimeStream, RuntimeLoadStream } from "./stream.mts";
 export type { RuntimeStream, RuntimeLoadStream } from "./stream.mts";
-import { createRequire } from "node:module";
 import { createServer, STATUS_CODES } from "node:http";
 import type { IncomingMessage, ServerResponse, Server } from "node:http";
 import type { Duplex } from "node:stream";
@@ -11,12 +13,15 @@ import {
   bootstrapEffectsFor,
   lowerFirst,
   type RuntimeInvalidate,
-} from "./effects.mts";
-import type { HostRequest, SettlementEffects } from "./host-contract.mts";
-import { isRetryableTransactionError } from "./retryable.mts";
+} from "../bindings/effects.mts";
+import type {
+  HostRequest,
+  SettlementEffects,
+} from "../bindings/host-contract.mts";
+import { isRetryableTransactionError } from "../bindings/retryable.mts";
 export { WebSocket } from "ws";
-export { isRetryableTransactionError } from "./retryable.mts";
-export type { RecordRef, RuntimeInvalidate } from "./effects.mts";
+export { isRetryableTransactionError } from "../bindings/retryable.mts";
+export type { RecordRef, RuntimeInvalidate } from "../bindings/effects.mts";
 export type {
   Acknowledged,
   Head,
@@ -29,70 +34,10 @@ export type {
   Protocol05Context,
   Protocol05Operation,
   Protocol05Request,
-} from "./host-contract.mts";
-import type { JsonValue } from "./host-contract.mts";
-export type Native = {
-  processLive05?(
-    config: string,
-    owner: string,
-    request: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  processDelivery05?(
-    config: string,
-    owner: string,
-    request: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  processMaterialization05?(
-    config: string,
-    owner: string,
-    request: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  processRead05?(
-    config: string,
-    owner: string,
-    request: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  handshake05?(
-    config: string,
-    owner: string,
-    request: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  serverMaterializationId05?(
-    config: string,
-    projectionGeneration: string,
-  ): string;
-  validateMutationBatch?(config: string, request: string): string;
-  processBatchMember?(
-    config: string,
-    owner: string,
-    request: string,
-    ordinal: number,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  encodeBatchAcknowledgement?(request: string, results: string[]): string;
-  settleExternal05?(
-    config: string,
-    settlement: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  validateConfig(config: string): void;
-  /** Negotiates and opens the socket's `Subscriptions`; answers `{handle, actions}` JSON. */
-  negotiateLive(
-    config: string,
-    owner: string,
-    request: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  /** Applies one `LiveEvent` JSON to the session and answers its `LiveAction[]` JSON. */
-  liveEvent(handle: number, event: string): string;
-  /** Forgets the session; idempotent. */
-  liveClose(handle: number): void;
-};
+} from "../bindings/host-contract.mts";
+import type { JsonValue } from "../bindings/host-contract.mts";
+export type { Native } from "../bindings/native.mts";
+import type { Native } from "../bindings/native.mts";
 /** One stream's progress in a page: after `from`, up to `to`, of a stream at `head`. */
 export type CursorRange = { from: number; to: number; head: number };
 /** What the executor reports to the Rust `Subscriptions` controller. */
@@ -151,150 +96,8 @@ export function devAuth(): Authenticate {
     return id === "" ? null : id;
   };
 }
-/**
- * A failure reported by the native engine. `code` is the stable machine name
- * transports and applications should branch on; `message` is for people and
- * may be reworded; `details` carries the fields a code promises (only
- * `mutation_version_unsupported` has any: `ordinal`, `name`, `version`).
- */
-export class EngineError extends Error {
-  readonly code: string;
-  readonly details: Record<string, unknown> | undefined;
-  constructor(
-    code: string,
-    message: string,
-    details?: Record<string, unknown>,
-  ) {
-    super(message);
-    this.name = "EngineError";
-    this.code = code;
-    this.details = details;
-  }
-}
-/** The native addon carries the engine error as JSON in the error message. */
-function engineError(error: unknown): unknown {
-  if (error instanceof EngineError) return error;
-  const text =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : "";
-  if (!text.startsWith("{")) return error;
-  try {
-    const parsed = JSON.parse(text);
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      typeof parsed.code === "string" &&
-      typeof parsed.message === "string"
-    ) {
-      const details =
-        parsed.details && typeof parsed.details === "object"
-          ? (parsed.details as Record<string, unknown>)
-          : undefined;
-      return new EngineError(parsed.code, parsed.message, details);
-    }
-  } catch {
-    // Not an engine error; leave it as received.
-  }
-  return error;
-}
-/** Wrap every native function so its failures surface as `EngineError`. */
-function typedNative(native: Native): Native {
-  type Async = "negotiateLive";
-  type Sync = "validateConfig" | "liveEvent" | "liveClose";
-  const wrap =
-    <K extends Async>(key: K) =>
-    (...args: Parameters<Native[K]>): ReturnType<Native[K]> =>
-      (native[key] as (...a: Parameters<Native[K]>) => ReturnType<Native[K]>)(
-        ...args,
-      ).catch((error: unknown) => {
-        throw engineError(error);
-      }) as ReturnType<Native[K]>;
-  const wrapSync =
-    <K extends Sync>(key: K) =>
-    (...args: Parameters<Native[K]>): ReturnType<Native[K]> => {
-      try {
-        return (
-          native[key] as (...a: Parameters<Native[K]>) => ReturnType<Native[K]>
-        )(...args);
-      } catch (error) {
-        throw engineError(error);
-      }
-    };
-  return {
-    ...Object.fromEntries(
-      [
-        "processDelivery05",
-        "processMaterialization05",
-        "processRead05",
-        "handshake05",
-        "processLive05",
-      ]
-        .filter((key) => typeof (native as any)[key] === "function")
-        .map((key) => [
-          key,
-          (...args: any[]) =>
-            (native as any)[key](...args).catch((error: unknown) => {
-              throw engineError(error);
-            }),
-        ]),
-    ),
-    ...(native.serverMaterializationId05
-      ? {
-          serverMaterializationId05:
-            native.serverMaterializationId05.bind(native),
-        }
-      : {}),
-    ...(native.validateMutationBatch
-      ? {
-          validateMutationBatch: (config: string, request: string) => {
-            try {
-              return native.validateMutationBatch!(config, request);
-            } catch (error) {
-              throw engineError(error);
-            }
-          },
-        }
-      : {}),
-    ...(native.processBatchMember
-      ? {
-          processBatchMember: (
-            ...args: Parameters<NonNullable<Native["processBatchMember"]>>
-          ) =>
-            native.processBatchMember!(...args).catch((error) => {
-              throw engineError(error);
-            }),
-        }
-      : {}),
-    ...(native.encodeBatchAcknowledgement
-      ? {
-          encodeBatchAcknowledgement: (request: string, results: string[]) => {
-            try {
-              return native.encodeBatchAcknowledgement!(request, results);
-            } catch (error) {
-              throw engineError(error);
-            }
-          },
-        }
-      : {}),
-    ...(native.settleExternal05
-      ? {
-          settleExternal05: (
-            ...args: Parameters<NonNullable<Native["settleExternal05"]>>
-          ) =>
-            native.settleExternal05!(...args).catch((error) => {
-              throw engineError(error);
-            }),
-        }
-      : {}),
-    validateConfig: wrapSync("validateConfig"),
-    negotiateLive: wrap("negotiateLive"),
-    liveEvent: wrapSync("liveEvent"),
-    liveClose: wrapSync("liveClose"),
-  };
-}
+export { EngineError } from "../bindings/native.mts";
+import { EngineError, loadNative } from "../bindings/native.mts";
 /**
  * Engine codes with a client-visible HTTP status. Every other failure is a
  * server-side defect: reported to `onError` and answered `500 {code: "server"}`.
@@ -436,45 +239,6 @@ function versioned<F>(
       );
   return table;
 }
-/** Decode an operation value from its wire form into the API view (a DateTime becomes a Date). */
-function decodeActionValue(type: any, value: unknown): unknown {
-  if (value == null) return value;
-  if (type?.kind === "list")
-    return (value as unknown[]).map((item) =>
-      decodeActionValue(type.element, item),
-    );
-  if (type?.name === "dateTime") return new Date(value as string);
-  return value;
-}
-function decodeActionRecord(
-  value: unknown,
-  model: { fields?: { name: string; type: unknown }[] },
-): unknown {
-  if (value == null) return value;
-  const record = value as Record<string, unknown>;
-  for (const field of model.fields ?? [])
-    if (Object.hasOwn(record, field.name))
-      record[field.name] = decodeActionValue(field.type, record[field.name]);
-  return record;
-}
-/** Current binding is trusted by the engine; selectors remain explicit. */
-function scopedStreams<S extends RuntimeLoadStream>(
-  effects: { stream: (names: string | readonly string[]) => S },
-  context: { stream: string },
-): {
-  stream: S & ((names: string | readonly string[]) => S);
-  streams: (names: readonly string[]) => S;
-} {
-  const current = effects.stream(context.stream);
-  const stream = Object.assign(
-    (names: string | readonly string[]) => effects.stream(names),
-    current,
-  );
-  return {
-    stream,
-    streams: (names: readonly string[]) => effects.stream(names),
-  };
-}
 export interface BackendOptions<T> {
   protocol5?: {
     projectionGeneration?: string;
@@ -533,21 +297,6 @@ export interface BackendOptions<T> {
    */
   onError?: (error: unknown) => void;
 }
-/** JSON cannot represent nonfinite values or undefined array items. Never turn either into null. */
-function callbackJson(value: unknown): string {
-  return JSON.stringify(value, (_key, item) => {
-    if (typeof item === "bigint") {
-      const number = Number(item);
-      if (!Number.isSafeInteger(number))
-        throw new Error("bigint outside safe integer range");
-      return number;
-    }
-    if (typeof item === "number" && !Number.isFinite(item))
-      throw new Error("nonfinite callback value");
-    if (item === undefined) throw new Error("undefined callback value");
-    return item;
-  });
-}
 class WakeHub {
   private listeners = new Map<string, Set<() => void>>();
   subscribe(stream: string, wake: () => void): () => void {
@@ -568,45 +317,6 @@ class WakeHub {
     this.listeners.clear();
   }
 }
-class Session {
-  failed: unknown;
-  closed = false;
-  pending = new Set<Promise<unknown>>();
-  touched = new Set<string>();
-  savepoints = new Map<number, Set<string>>();
-  track<R>(body: () => Promise<R>): Promise<R> {
-    if (this.closed)
-      return Promise.reject(new Error("transaction session closed"));
-    const result = Promise.resolve()
-      .then(body)
-      .catch((error) => {
-        this.failed ??= error;
-        throw error;
-      });
-    this.pending.add(result);
-    void result.then(
-      () => this.pending.delete(result),
-      () => this.pending.delete(result),
-    );
-    return result;
-  }
-  savepoint(ordinal: number): void {
-    this.savepoints.set(ordinal, new Set(this.touched));
-  }
-  rollback(ordinal: number): void {
-    this.touched = new Set(this.savepoints.get(ordinal) ?? []);
-  }
-  release(ordinal: number): void {
-    this.savepoints.delete(ordinal);
-  }
-  async assertCommittable(): Promise<void> {
-    const unawaited = this.pending.size > 0;
-    while (this.pending.size) await Promise.allSettled([...this.pending]);
-    if (this.failed !== undefined) throw this.failed;
-    if (unawaited) throw new Error("unawaited transaction operations");
-    if (this.closed) throw new Error("transaction session closed");
-  }
-}
 /** The retained backend business kind of an operation; omitted is `mutation`. */
 type CallKind = "mutation" | "query";
 /** Where each operation kind registers its handlers. */
@@ -621,49 +331,11 @@ const REGISTRATION_GROUP = {
 export function createBackend<T, External extends object = TransactionCall<T>>(
   options: BackendOptions<T>,
 ) {
-  const native = typedNative(
-    options.native ??
-      (createRequire(import.meta.url)("@axtonjs/native") as Native),
-  );
+  const native = loadNative(options.native);
   // Nothing is dropped silently: without a handler, failures go to the console.
   const onError: (error: unknown) => void =
     options.onError ?? ((error) => console.error(error));
-  const descriptor = options.config as {
-    schema?: {
-      enums?: { name: string; values?: string[] }[];
-      models?: {
-        name: string;
-        version?: number;
-        identity?: string[];
-        fields?: { name: string; type: unknown }[];
-      }[];
-      actions?: {
-        name: string;
-        version: number;
-        kind?: CallKind;
-        inputs?: {
-          kind: string;
-          name: string;
-          model?: string;
-          cardinality?: string;
-          list?: boolean;
-          type?: unknown;
-        }[];
-        outputs?: { source: unknown }[];
-        input?: {
-          models?: {
-            name: string;
-            fields?: { name: string; type: unknown }[];
-          }[];
-        };
-      }[];
-    };
-    models?: {
-      name: string;
-      version: number;
-      fields?: { name: string; type: unknown }[];
-    }[];
-  };
+  const descriptor = options.config as BackendDescriptor;
   const schemaModels = descriptor.schema?.models ?? [];
   const modelNames = schemaModels.map((model) => model.name);
   // A Model whose Loader is omitted (undefined) is device-only (#187): the
@@ -840,256 +512,23 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     onError(error);
     return { error: error instanceof Error ? error.message : String(error) };
   };
-  const host = (
-    tx: T,
-    session: Session,
-  ): ((request: string) => Promise<string>) => {
-    const storage = options.database.persistence(tx);
-    return (raw) =>
-      session.track(async () => {
-        const req = JSON.parse(raw) as HostRequest;
-        let result: unknown;
-        // `savepoint`, `rollback` and `release` are answered by the persistence
-        // and also bookkept here, so each one does both.
-        if (req.op === "savepoint") session.savepoint(req.ordinal);
-        if (req.op === "rollback") session.rollback(req.ordinal);
-        if (req.op === "release") session.release(req.ordinal);
-        if (req.op === "protocol05" && req.request.op === "admit") {
-          const context = req.request.context as { stream: string };
-          result =
-            !!options.protocol5 &&
-            (await options.protocol5.authorizeStream(
-              String(req.request.owner),
-              context.stream,
-              tx,
-            ));
-        } else if (
-          req.op === "protocol05" &&
-          req.request.op === "handleBootstrap05"
-        ) {
-          const effects = createBootstrapEffects();
-          try {
-            await options.bootstrap?.({
-              ctx: {
-                tx,
-                userId: req.request.owner,
-                callId: `bootstrap:${req.request.storeId}`,
-                stream: Object.assign(
-                  (names: string | readonly string[]) => effects.stream(names),
-                  effects.stream(req.request.stream),
-                ),
-                streams: (names: readonly string[]) => effects.stream(names),
-              },
-            });
-            if (effects.failure()) throw effects.failure()!.error;
-            result = { declarations: effects.tracking() };
-          } finally {
-            effects.close();
-          }
-        } else if (req.op === "handleAction") {
-          const action = actionTable.get(`${req.name}:${req.version}`);
-          const handler = actionHandlers.get(`${req.name}:${req.version}`);
-          if (!action || !handler)
-            throw new Error(`Missing handler ${req.name} v${req.version}`);
-          const args = { ...req.arguments };
-          for (const input of action.inputs ?? []) {
-            if (input.kind === "value") {
-              const type = input.list
-                ? { kind: "list", element: input.type }
-                : input.type;
-              args[input.name] = decodeActionValue(type, args[input.name]);
-              continue;
-            }
-            if (!input.model) continue;
-            const model =
-              action.input?.models?.find(
-                (candidate: any) => candidate.name === input.model,
-              ) ??
-              schemaModels.find((candidate) => candidate.name === input.model);
-            if (!model) throw new Error(`Missing Action model ${input.model}`);
-            // The engine infers each operand as an input target; the handler
-            // only sees the decoded record.
-            const shape = (value: unknown): unknown =>
-              value === null || value === undefined
-                ? null
-                : decodeActionRecord(value, model);
-            const value = args[input.name];
-            args[input.name] =
-              input.cardinality === "list"
-                ? (value as unknown[]).map(shape)
-                : shape(value);
-          }
-          // Bound Queries may track explicitly, but cannot invalidate or write.
-          // Legacy Queries expose no declaration handles.
-          const query = (action.kind ?? "mutation") === "query";
-          const effects = query
-            ? req.context
-              ? createLoadEffects()
-              : undefined
-            : createEffects();
-          try {
-            const outputs = await handler({
-              ctx: effects
-                ? {
-                    tx,
-                    userId: req.owner,
-                    callId: req.callId,
-                    ...(req.context
-                      ? scopedStreams(effects, req.context)
-                      : { stream: effects.stream }),
-                    ...(!query
-                      ? {
-                          invalidate: (
-                            effects as ReturnType<typeof createEffects>
-                          ).invalidate,
-                        }
-                      : {}),
-                  }
-                : { tx, userId: req.owner, callId: req.callId },
-              args,
-            } as Parameters<MutationHandler<T>>[0]);
-            // A caught declaration refusal still fails the entire read. Never
-            // settle the prefix collected before an overflow or invalid input.
-            if (query && effects) {
-              const failure = (
-                effects as ReturnType<typeof createLoadEffects>
-              ).failure();
-              if (failure) throw failure.error;
-            }
-            result = {
-              outputs: outputs === undefined ? {} : outputs,
-              ...(effects
-                ? query
-                  ? {
-                      changes: [],
-                      declarations: (
-                        effects as ReturnType<typeof createLoadEffects>
-                      ).tracking(),
-                    }
-                  : (effects as ReturnType<typeof createEffects>).settlement()
-                : { changes: [], declarations: [] }),
-            };
-          } catch (error) {
-            if (isRetryableTransactionError(error)) throw error;
-            const answer = refusal(error);
-            if ("error" in answer) throw error;
-            result = answer;
-          } finally {
-            effects?.close();
-          }
-        } else if (req.op === "load") {
-          // Dispatch is by model name and contract version; a version that
-          // was not registered is a defect, never another version's loader.
-          const loader = loaderTable.get(`${req.model}:${req.version}`);
-          if (!loader)
-            throw new Error(`Missing loader ${req.model} v${req.version}`);
-          const loaderModel =
-            (descriptor.models ?? []).find(
-              (model: any) =>
-                model.name === req.model && model.version === req.version,
-            ) ?? schemaModels.find((model) => model.name === req.model);
-          const call = {
-            ids: (req.identities as any[]).map((identity) =>
-              loaderModel
-                ? decodeActionRecord(identity, loaderModel)
-                : identity,
-            ),
-            tx,
-            userId: req.owner,
-          };
-          // Explicit business refusal is data. Other thrown errors abort the
-          // acceptance/read transaction; the caller's retry loop keeps the
-          // original infrastructure error.
-          let refused: { rejection: string } | { error: string } | undefined;
-          let rows: unknown;
-          try {
-            const hook = options.loaderHooks?.[lowerFirst(req.model)];
-            if (req.mode !== "canonical" && hook) {
-              await storage.call({ op: "publicationFence" });
-              const effects = createEffects();
-              try {
-                await hook.prepareForViewer({
-                  ...call,
-                  streams: effects.stream,
-                  invalidate: effects.invalidate,
-                });
-              } finally {
-                effects.close();
-              }
-              await native.settleExternal05!(
-                config,
-                JSON.stringify(effects.settlement()),
-                host(tx, session),
-              );
-            }
-            rows = req.mode === "prepare" ? [] : await loader(call);
-          } catch (error) {
-            if (isRetryableTransactionError(error)) throw error;
-            const answer = refusal(error);
-            if ("error" in answer) throw error;
-            refused = answer;
-          }
-          if (refused) return callbackJson(refused);
-          // An answer JSON cannot carry faithfully is a failed read, never a
-          // null: the engine retries the records one by one, so only the
-          // record whose row is broken fails.
-          let reason: string | undefined;
-          let answer = "";
-          if (!Array.isArray(rows)) reason = "a non-array result";
-          else if (rows.some((value) => value === undefined))
-            reason = "an undefined entry";
-          else
-            try {
-              answer = callbackJson(rows);
-            } catch (error) {
-              reason = error instanceof Error ? error.message : String(error);
-            }
-          if (reason === undefined) return answer;
-          const invalid = new Error(
-            `invalid loader answer for ${req.model} v${req.version}: ${reason}`,
-          );
-          onError(invalid);
-          return callbackJson({ error: invalid.message });
-        } else {
-          // Everything the persistence owns, plus anything this build does not
-          // know: an operation added to the contract without an arm here is a
-          // compile error, not a silent forward.
-          switch (req.op) {
-            case "protocol05":
-            case "publicationFence":
-            case "head":
-            case "savepoint":
-            case "rollback":
-            case "release":
-            case "readTracking":
-            case "guardRecords":
-            case "lockStreams":
-            case "applyStreamMembers":
-              break;
-            default: {
-              const unreachable: never = req;
-              void unreachable;
-            }
-          }
-          result = await storage.call(req);
-          // Every position that survives its savepoint wakes the stream's
-          // subscribers after commit; `rollback` restores the set it snapshot.
-          const publication =
-            req.op === "protocol05" && req.request.op === "applyStreamMembers"
-              ? req.request
-              : req.op === "applyStreamMembers"
-                ? req
-                : undefined;
-          if (publication)
-            for (const delta of publication.deltas as {
-              publish: boolean;
-              stream: string;
-            }[])
-              if (delta.publish) session.touched.add(delta.stream);
-        }
-        return callbackJson(result);
-      });
+  const hostDependencies: HostDependencies<T> = {
+    options,
+    native,
+    config,
+    descriptor,
+    schemaModels,
+    actionTable,
+    actionHandlers,
+    loaderTable,
+    createEffects,
+    createLoadEffects,
+    createBootstrapEffects,
+    refusal,
+    onError,
   };
+  const host = (tx: T, session: Session) =>
+    createHost(hostDependencies, tx, session);
   /**
    * Runs `operation` under one session bound to `tx`: every host callback is
    * tracked, and the operation completes only once none is unfinished or

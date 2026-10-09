@@ -1,5 +1,5 @@
 use axton_client::{ActionOutcome, Client, Schema};
-use axton_core::v05;
+use axton_protocols::sync as v05;
 use axton_server::{Config, Host, HostResult};
 use axton_sqlite::SqliteStore;
 use serde_json::{Value, json};

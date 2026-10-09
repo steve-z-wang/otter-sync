@@ -7,7 +7,8 @@ use crate::{
     protocol_v05::{self, Publication05},
     request_invalid, storage_invalid,
 };
-use axton_core::{ActionInputDescriptor, RecordKey, v05};
+use axton_core::{ActionInputDescriptor, RecordKey};
+use axton_protocols::sync as v05;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::BTreeMap;

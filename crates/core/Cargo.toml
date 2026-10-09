@@ -11,4 +11,3 @@ thiserror.workspace = true
 serde_jcs.workspace = true
 chrono.workspace = true
 uuid.workspace = true
-sha2.workspace = true

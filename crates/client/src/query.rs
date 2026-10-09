@@ -2,31 +2,11 @@
 use crate::engine::Engine;
 use crate::store::{ClientStore, SqlRows};
 use axton_core::{RecordKey, Result, ValueType, invalid};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QuerySpec {
-    #[serde(default)]
-    pub filter: BTreeMap<String, Value>,
-    #[serde(default)]
-    pub order_by: Vec<QueryOrder>,
-    pub limit: Option<usize>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct QueryOrder {
-    pub field: String,
-    pub direction: Direction,
-}
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Direction {
-    Ascending,
-    Descending,
-}
+pub use axton_protocols::client_bridge::query::{Direction, QueryOrder, QuerySpec};
 fn compare(a: &Value, b: &Value) -> Ordering {
     match (a, b) {
         (Value::Null, Value::Null) => Ordering::Equal,

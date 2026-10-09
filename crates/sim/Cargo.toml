@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+axton-protocols = { path = "../protocols" }
 axton-core = { path = "../core" }
 axton-client = { path = "../client" }
 axton-sqlite = { path = "../sqlite" }

@@ -4,7 +4,8 @@ use crate::{
     engine::{Engine, as_u64},
     invalid,
 };
-use axton_core::{canonical_json, v05};
+use axton_core::canonical_json;
+use axton_protocols::sync as v05;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -79,7 +80,7 @@ pub fn admit05<S: ClientStore>(store: &mut S, stream: &str) -> Result<bool> {
             .ok_or_else(|| invalid("materialization missing"))?
             .into(),
     };
-    axton_core::v05::Validate::validate(&context)?;
+    axton_protocols::sync::Validate::validate(&context)?;
     for value in &r[4..] {
         if !value.is_null() {
             axton_core::counter(as_u64(value)?)?;
@@ -117,7 +118,7 @@ impl<S: ClientStore> Client<S> {
     ) -> Result<Self> {
         schema.validate()?;
         let existing = admit05(&mut store, stream)?;
-        let materialization = axton_core::v05::materialization_id(&schema, projection)?;
+        let materialization = axton_protocols::sync::materialization_id(&schema, projection)?;
         let descriptor_text = canonical_json(&serde_json::to_value(&schema)?)?;
         let mut hash = Sha256::new();
         hash.update(b"axton:stored-descriptor:5\0");

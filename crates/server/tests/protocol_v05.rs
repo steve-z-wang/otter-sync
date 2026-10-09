@@ -1,5 +1,5 @@
-use axton_core::v05::{
-    self, Mutation, MutationOperation, MutationRequest, Operation, RequestContext,
+use axton_protocols::sync::{
+    self as v05, Mutation, MutationOperation, MutationRequest, Operation, RequestContext,
 };
 use axton_server::{Config, validate_mutation_batch};
 use serde_json::json;

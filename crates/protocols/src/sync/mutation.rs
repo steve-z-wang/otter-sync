@@ -149,14 +149,17 @@ pub fn reconstruct_input(operations: &[MutationOperation]) -> Result<Value> {
     Ok(Value::Object(slots.into_iter().collect()))
 }
 /// Identity of the complete retained Mutation descriptor, including snapshots.
-pub fn mutation_descriptor_digest(descriptor: &crate::ActionDescriptor) -> Result<String> {
+pub fn mutation_descriptor_digest(descriptor: &axton_core::ActionDescriptor) -> Result<String> {
     hash(
         "axton:mutation-descriptor:5",
         &serde_json::to_value(descriptor)?,
     )
 }
 /// Canonical read descriptor context under the protocol-5 domain.
-pub fn materialization_id(schema: &crate::Schema, projection_generation: &str) -> Result<String> {
+pub fn materialization_id(
+    schema: &axton_core::Schema,
+    projection_generation: &str,
+) -> Result<String> {
     materialization_id_for(
         schema,
         &schema
@@ -170,11 +173,11 @@ pub fn materialization_id(schema: &crate::Schema, projection_generation: &str) -
 /// Retained versions use their exact read descriptor and reachable enum values.
 /// The caller supplies retained descriptors in Schema.result_models.
 pub fn materialization_id_for(
-    schema: &crate::Schema,
+    schema: &axton_core::Schema,
     models: &BTreeMap<String, u64>,
     projection_generation: &str,
 ) -> Result<String> {
-    let bytes = crate::canonical_json(&crate::materialization::contract(
+    let bytes = axton_core::canonical_json(&axton_core::materialization::contract(
         schema,
         models,
         projection_generation,

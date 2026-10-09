@@ -119,8 +119,8 @@ pub(crate) async fn assemble_snapshots(
     outputs: &Value,
     policy: SnapshotPolicy<'_>,
     host: &impl Host,
-) -> Result<(Value, Vec<axton_core::v05::ReadRecord>)> {
-    use axton_core::v05::{ReadRecord, RecordKey as ReadKey};
+) -> Result<(Value, Vec<axton_protocols::sync::ReadRecord>)> {
+    use axton_protocols::sync::{ReadRecord, RecordKey as ReadKey};
     let explicit = outputs
         .as_object()
         .ok_or_else(|| Error::code(code::HANDLER_INVALID))?;

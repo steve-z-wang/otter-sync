@@ -1,5 +1,5 @@
 //! Protocol 5 contract and pure planning helpers. No network or database I/O.
-use crate::{Result, canonical_json, check_stream, counter, invalid};
+use axton_core::{Result, canonical_json, check_stream, counter, invalid};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -336,7 +336,7 @@ impl Validate for BatchAcknowledgement {
                     }
                 }
                 MutationOutcome::Rejected { code, .. } => {
-                    if !crate::valid_code(code) {
+                    if !axton_core::valid_code(code) {
                         return Err(invalid("invalid rejection code"));
                     }
                 }
@@ -371,7 +371,7 @@ impl Validate for ReadResponse {
         self.context.validate()?;
         text(&self.request_id)?;
         if let ReadOutcome::Failed { code, .. } = &self.outcome
-            && (!crate::valid_code(code) || !self.records.is_empty())
+            && (!axton_core::valid_code(code) || !self.records.is_empty())
         {
             return Err(invalid("invalid definitive read failure"));
         }
@@ -867,9 +867,9 @@ impl ReadResponse {
     }
 }
 
-#[path = "protocol_v05/delivery.rs"]
+#[path = "sync/delivery.rs"]
 mod delivery;
-#[path = "protocol_v05/mutation.rs"]
+#[path = "sync/mutation.rs"]
 mod mutation;
 pub use delivery::*;
 pub use mutation::*;

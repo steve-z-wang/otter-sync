@@ -5,6 +5,7 @@ pub use delivery_plan::{
     handshake05, process_delivery05, process_live05, process_materialization05, process_read05,
 };
 mod actions;
+pub mod backend_interface;
 pub mod error;
 pub mod host;
 pub mod live;
@@ -24,17 +25,9 @@ use host::{Handled, Head, HostExt, HostRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use settlement::Changes;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    future::Future,
-    pin::Pin,
-};
+use std::collections::{BTreeMap, BTreeSet};
 pub type Result<T> = std::result::Result<T, Error>;
-/// The host reports its own failures as text; the engine files them under the `host` code.
-pub type HostResult<T> = std::result::Result<T, String>;
-pub trait Host: Send + Sync {
-    fn call(&self, request: Value) -> Pin<Box<dyn Future<Output = HostResult<Value>> + Send + '_>>;
-}
+pub use backend_interface::{Host, HostResult};
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
     pub schema: Schema,
@@ -264,19 +257,6 @@ fn storage_invalid(e: impl std::fmt::Display) -> Error {
 fn request_invalid(e: impl std::fmt::Display) -> Error {
     Error::new(code::REQUEST_INVALID, e.to_string())
 }
-pub(crate) fn valid_code(s: &str) -> bool {
-    let mut parts = s.split(['.', '_', '-']);
-    let first = parts.next().unwrap_or("");
-    first.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-        && first
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        && parts.all(|p| {
-            !p.is_empty()
-                && p.bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        })
-}
 fn principal(owner: &str) -> Result<()> {
     if owner.trim().is_empty() {
         Err(Error::new(code::PRINCIPAL_INVALID, "invalid principal"))
@@ -325,6 +305,6 @@ pub async fn settle_external(
 
 /// Canonical protocol-5 read context, independent of authenticated Store binding.
 pub fn materialization_id05(config: &Config, projection_generation: &str) -> Result<String> {
-    axton_core::v05::materialization_id(&config.schema, projection_generation)
+    axton_protocols::sync::materialization_id(&config.schema, projection_generation)
         .map_err(config_invalid)
 }

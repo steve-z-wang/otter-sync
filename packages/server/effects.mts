@@ -445,11 +445,12 @@ export function enrollmentBytes(intent: TrackIntent): number {
 /** A declaration past a bound: the page fails `load.page_too_large`. */
 class EnrollmentOverflow extends Error {}
 
-/** Load tracking is deduplicated and bounded atomically; caught failures remain sticky. */
-export function loadEffectsFor(
+/** Track-only declarations share validation, atomic capture and sticky failures. */
+function trackingEffectsFor(
   models: readonly EffectModel[],
-  enums: readonly EffectEnum[] = [],
-  loaded?: ReadonlySet<string>,
+  enums: readonly EffectEnum[],
+  loaded: ReadonlySet<string> | undefined,
+  page: boolean,
 ): () => LoadEffectCollector {
   const { entries, publishable, list, streamName } = declarationsOf(
     models,
@@ -516,12 +517,12 @@ export function loadEffectsFor(
               record: Object.freeze({ model: entry.name, identity }),
             }) as TrackIntent;
             fresh.set(key, captured);
-            more += enrollmentBytes(captured);
-            if (pairs.size + fresh.size > LOAD_ENROLLMENT_PAIRS)
+            if (page) more += enrollmentBytes(captured);
+            if (page && pairs.size + fresh.size > LOAD_ENROLLMENT_PAIRS)
               throw new EnrollmentOverflow(
                 `${caller}: the Load page tracks more than ${LOAD_ENROLLMENT_PAIRS} Stream/record pairs`,
               );
-            if (bytes + more > LOAD_ENROLLMENT_BYTES)
+            if (page && bytes + more > LOAD_ENROLLMENT_BYTES)
               throw new EnrollmentOverflow(
                 `${caller}: the Load page's tracking encodes to more than ${LOAD_ENROLLMENT_BYTES} bytes`,
               );
@@ -542,6 +543,24 @@ export function loadEffectsFor(
       },
     });
   };
+}
+
+/** One ordinary read page, including its cumulative enrollment bounds. */
+export function loadEffectsFor(
+  models: readonly EffectModel[],
+  enums: readonly EffectEnum[] = [],
+  loaded?: ReadonlySet<string>,
+): () => LoadEffectCollector {
+  return trackingEffectsFor(models, enums, loaded, true);
+}
+
+/** Full Bootstrap enrollment precedes native finite-plan paging, not one read page. */
+export function bootstrapEffectsFor(
+  models: readonly EffectModel[],
+  enums: readonly EffectEnum[] = [],
+  loaded?: ReadonlySet<string>,
+): () => LoadEffectCollector {
+  return trackingEffectsFor(models, enums, loaded, false);
 }
 
 /** One Load collector over `models`, validating them first. */

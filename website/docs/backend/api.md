@@ -149,6 +149,8 @@ An error that is neither `CallRejected` nor translated to a business code reject
 
 The schema's `@@bootstrap` marks historical Model types selected for initial materialization. Queries cover named history outside that baseline. Manifest paging, coverage, replay and tail capture belong to the native runtime; applications do not return a Load continuation or manage a Load job. Receipt-target recovery does not call this preparation callback.
 
+Preparation tracks the complete initial scope, including scopes larger than one Query page's enrollment limit. Applications may scan identities in batches; the framework deduplicates them before publication. Native delivery applies its finite-plan capacity and transport paging separately.
+
 ## Loaders
 
 ```ts title="action-contract"

@@ -8,6 +8,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import {
   effectsFor,
   loadEffectsFor,
+  bootstrapEffectsFor,
   lowerFirst,
   type RuntimeInvalidate,
 } from "./effects.mts";
@@ -708,6 +709,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     descriptor.schema?.enums,
     new Set(loadedModels),
   );
+  const createBootstrapEffects = bootstrapEffectsFor(
+    schemaModels,
+    descriptor.schema?.enums,
+    new Set(loadedModels),
+  );
   // Every retained model read contract; a config without `models` retains each
   // model at the schema's own version, as the engine does.
   const retainedModels = new Map<string, number[]>();
@@ -861,7 +867,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           req.op === "protocol05" &&
           req.request.op === "handleBootstrap05"
         ) {
-          const effects = createLoadEffects();
+          const effects = createBootstrapEffects();
           try {
             await options.bootstrap?.({
               ctx: {

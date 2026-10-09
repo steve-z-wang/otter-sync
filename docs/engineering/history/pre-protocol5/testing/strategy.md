@@ -6,10 +6,10 @@ Start with the behavior a change must preserve. Read the owning component's arch
 
 | Test area | What it checks |
 | --- | --- |
-| [Component](components/README.md) | One component obeys its rules, including invalid inputs and failure cases. |
+| [Component](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/testing/components/README.md) | One component obeys its rules, including invalid inputs and failure cases. |
 | [Simulation](simulation/README.md) | The Rust sync core behaves correctly across clients, message orders and recovery. |
-| [Integration](integration/README.md) | Real storage, language and network boundaries satisfy the contracts the core relies on. |
-| [End-to-end](end-to-end.md) | The assembled system completes a user-visible path. |
+| [Integration](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/testing/integration/README.md) | Real storage, language and network boundaries satisfy the contracts the core relies on. |
+| [End-to-end](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/testing/end-to-end.md) | The assembled system completes a user-visible path. |
 
 These are AXTON's testing responsibilities. Component, integration and end-to-end describe test scope; simulation provides a controlled environment for exercising the Rust core across components.
 
@@ -17,9 +17,9 @@ Choose by the property, not the test file's directory. Client engine tests curre
 
 ## Guarantees and component rules
 
-Keep top-level [guarantees](../guarantees.md) focused on overall, observable behavior of the Rust sync core. Simulation is the primary tool for exploring those behaviors across operation sequences. Real-boundary tests provide additional evidence when a behavior depends on database or transport semantics.
+Keep top-level [guarantees](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/guarantees.md) focused on overall, observable behavior of the Rust sync core. Simulation is the primary tool for exploring those behaviors across operation sequences. Real-boundary tests provide additional evidence when a behavior depends on database or transport semantics.
 
-Detailed compiler, SDK, storage and connection rules belong in their [component documents](../architecture.md). Link their test evidence there; a tested component rule does not automatically need a new top-level guarantee.
+Detailed compiler, SDK, storage and connection rules belong in their [component documents](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture.md). Link their test evidence there; a tested component rule does not automatically need a new top-level guarantee.
 
 ## Adding or changing a test
 

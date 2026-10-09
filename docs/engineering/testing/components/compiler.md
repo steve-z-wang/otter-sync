@@ -6,6 +6,8 @@ Verify the [compiler](../../architecture/compiler/README.md) stages and generate
 
 [history.rs](../../../../crates/compiler/tests/history.rs) owns retained Model/Mutation history; [other compiler suites](../../../../crates/compiler/tests) cover CLI and emitter contracts. Text emission assertions establish generated text only; [SDK integration](../integration/bindings.md) owns actual language compilation. Creation defaults reach real SQLite through [protocol05_defaults.rs](../../../../crates/sqlite/tests/protocol05_defaults.rs), a separate runtime boundary.
 
+Current source Load declarations and Load history CLI options are refused; [loads.rs](../../../../crates/compiler/tests/loads.rs) and [v04_facade.rs](../../../../crates/compiler/tests/v04_facade.rs) keep this negative admission evidence active. Retained JSON/history checks are compatibility evidence, not a supported source surface.
+
 Run `cargo test -p axton-compiler --locked`.
 
 Evidence below was inspected on 2026-10-09; these suites were not executed for this documentation change. Prior execution records remain in [history](../../history/pre-protocol5/testing/components/compiler.md). Source inspection supplies neither a new passing result nor a complete-coverage claim.

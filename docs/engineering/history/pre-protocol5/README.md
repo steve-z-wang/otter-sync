@@ -39,3 +39,6 @@ Current behavior and evidence belong to the [engineering index](../../README.md)
 | `testing/simulation/invariants.md` | Mixed-period testing snapshot at baseline | [snapshot](testing/simulation/invariants.md) |
 | `testing/simulation/recovery.md` | Mixed-period testing snapshot at baseline | [snapshot](testing/simulation/recovery.md) |
 | `testing/simulation/scenarios.md` | Mixed-period testing snapshot at baseline | [snapshot](testing/simulation/scenarios.md) |
+| `testing/README.md` | Mixed-period testing snapshot at baseline | [snapshot](testing/README.md) |
+| `testing/simulation/README.md` | Mixed-period testing snapshot at baseline | [snapshot](testing/simulation/README.md) |
+| `testing/strategy.md` | Mixed-period testing snapshot at baseline | [snapshot](testing/strategy.md) |

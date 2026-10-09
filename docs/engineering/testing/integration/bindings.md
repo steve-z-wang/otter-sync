@@ -2,7 +2,7 @@
 
 Verify that generated APIs and native calls preserve types, values, errors, callbacks and resource ownership. Link engine behavior to its existing tests; exercise it here when crossing the boundary introduces a distinct failure mode.
 
-Existing entry points are the [runtime actor tests](../../../../bindings/common/tests/runtime.rs), the [C ABI tests](../../../../bindings/mobile/src/lib.rs), [JavaScript tests](../../../../integration/bindings/client-js), [Dart tests](../../../../packages/frontend/dart/test) and [generated API fixtures](../../../../integration/generated-api). The runtime's own scheduling and lifecycle rules are tested once in Rust ([Runtime](../../architecture/client/runtime.md#10-quality-requirements)); these tests cover what crossing the carrier adds.
+Existing entry points are the [runtime actor tests](../../../../bindings/common/tests/runtime.rs), the [C ABI tests](../../../../bindings/mobile/src/lib.rs), [JavaScript tests](../../../../integration/bindings/client-js), [Dart tests](../../../../packages/frontend/dart/test) and [generated API fixtures](../../../../integration/generated-api). The runtime's own scheduling and lifecycle rules are tested once in Rust ([Runtime](../../architecture/client/runtime.md)); these tests cover what crossing the carrier adds.
 
 After the prerequisites and native build in [Running tests](../running.md):
 

@@ -42,7 +42,7 @@ Component, integration and end-to-end describe the scope of a test. Simulation d
 
 [Strategy](testing/strategy.md) explains how to choose the tests and environment. [Running tests](testing/running.md) lists commands and prerequisites.
 
-[Coverage review](history/pre-protocol5/testing/review.md) records current gaps and the scope of the next testing issue. These pages define the intended responsibilities; they do not certify complete coverage.
+[Coverage review](testing/review.md) records inspected current assertions and their limits. These pages define the intended responsibilities; they do not certify complete coverage.
 
 ## Code map
 

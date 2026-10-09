@@ -6,8 +6,6 @@ pub use delivery_plan::{
 };
 mod actions;
 pub mod backend_interface;
-pub mod error;
-pub mod host;
 pub mod live;
 mod materialization;
 pub use materialization::RetainedMaterialization;
@@ -17,10 +15,10 @@ pub use protocol_v05::{
 };
 mod mutation_batch;
 mod settlement;
-pub mod stream_members;
 use axton_core::{Schema, read_counter};
-pub use error::{Error, code};
-use host::{Handled, Head, HostExt, HostRequest};
+pub use axton_protocols::server_bridge::{Error, code};
+use axton_protocols::server_bridge::{Handled, Head, HostRequest};
+use backend_interface::HostExt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

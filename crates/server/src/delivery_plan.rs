@@ -1,12 +1,16 @@
 //! Finite fenced authority, frozen once; continuation never invokes a Loader.
 use crate::{
     Config, Error, Host, Result,
-    host::{Acknowledged, HostExt, HostRequest, Loaded, LoaderMode, MemberKey},
+    backend_interface::HostExt,
     internal,
     protocol_v05::{Publication05, call},
     request_invalid, storage_invalid,
 };
 use axton_core::canonical_json;
+use axton_protocols::server_bridge::{
+    Acknowledged, BootstrapEffects, HandledAction, HostRequest, Loaded, LoaderMode, MemberKey,
+    StreamIntent,
+};
 use axton_protocols::sync::{self as v05, Validate};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -71,7 +75,7 @@ async fn prepare(
     )
     .await?;
     if !done {
-        let effects:crate::host::BootstrapEffects=call(host,json!({"op":"handleBootstrap05","owner":owner,"storeId":context.store_id,"stream":context.stream})).await?;
+        let effects:BootstrapEffects=call(host,json!({"op":"handleBootstrap05","owner":owner,"storeId":context.store_id,"stream":context.stream})).await?;
         let declarations = effects
             .declarations
             .into_iter()
@@ -689,7 +693,7 @@ pub async fn process_read05(
                 }
                 let args = axton_core::normalize_action_args(&config.schema, action, args)
                     .map_err(request_invalid)?;
-                let handled: crate::host::HandledAction = host
+                let handled: HandledAction = host
                     .call_typed(HostRequest::HandleAction {
                         name: name.clone(),
                         version: *version,
@@ -701,14 +705,14 @@ pub async fn process_read05(
                     })
                     .await?;
                 let outputs = match handled {
-                    crate::host::HandledAction::Settled {
+                    HandledAction::Settled {
                         outputs,
                         changes,
                         declarations,
                     } if changes.is_empty()
                         && !declarations
                             .iter()
-                            .any(|d| matches!(d, crate::host::StreamIntent::Invalidate { .. })) =>
+                            .any(|d| matches!(d, StreamIntent::Invalidate { .. })) =>
                     {
                         if !declarations.is_empty() {
                             if !bound {
@@ -726,13 +730,13 @@ pub async fn process_read05(
                         .await?;
                         outputs
                     }
-                    crate::host::HandledAction::Settled { .. } => {
+                    HandledAction::Settled { .. } => {
                         return Err(Error::code("query.effects_forbidden"));
                     }
-                    crate::host::HandledAction::Rejected { rejection } => {
+                    HandledAction::Rejected { rejection } => {
                         return Err(Error::code(rejection));
                     }
-                    crate::host::HandledAction::Failed { .. } => {
+                    HandledAction::Failed { .. } => {
                         return Err(Error::code("handler.failed"));
                     }
                 };

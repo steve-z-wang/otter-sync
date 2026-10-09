@@ -1,8 +1,9 @@
 //! Canonical Loader snapshots and retained action result assembly.
 use crate::actions::input_identities;
-use crate::host::{HostExt, HostRequest, Loaded};
+use crate::backend_interface::HostExt;
 use crate::{Config, Error, Host, Result, code, internal};
 use axton_core::{ActionDescriptor, ActionOutputSource, RecordKey, materialize_action_model};
+use axton_protocols::server_bridge::{HostRequest, Loaded, LoaderMode};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 /// Loader reads of this invocation, deduplicated by record and read version.
@@ -50,7 +51,7 @@ pub(crate) async fn load_state(
 ) -> Result<Value> {
     let loaded: Loaded = host
         .call_typed(HostRequest::Load {
-            mode: canonical.then_some(crate::host::LoaderMode::Canonical),
+            mode: canonical.then_some(LoaderMode::Canonical),
             model: key.model.clone(),
             version,
             identities: vec![key.identity.clone()],

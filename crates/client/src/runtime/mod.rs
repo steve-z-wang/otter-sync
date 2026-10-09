@@ -8,13 +8,12 @@ mod effects;
 mod lanes;
 mod observers;
 mod prerequisites;
-pub mod protocol;
 mod sql_watches;
 mod tasks;
 mod transactions;
 mod unsent;
 
-pub use protocol::*;
+pub use axton_protocols::client_bridge::*;
 
 use crate::{Client, ClientStore, Result};
 use serde_json::{Value, json};

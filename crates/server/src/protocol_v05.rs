@@ -1,10 +1,9 @@
 //! Protocol-5 carrier admission and publication adapter. Envelopes belong to axton_protocols::sync.
 use crate::{
-    Config, Host, HostResult, Result,
-    host::{HostExt, HostRequest},
-    internal, request_invalid,
+    Config, Host, HostResult, Result, backend_interface::HostExt, internal, request_invalid,
 };
 use axton_core::{ActionInputDescriptor, CallKind};
+use axton_protocols::server_bridge::{HostRequest, Loaded};
 use axton_protocols::sync as v05;
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
@@ -103,8 +102,7 @@ impl<H: Host> Host for Publication05<'_, H> {
             }
             let answer = self.0.call(request).await?;
             if loader
-                && let Ok(crate::host::Loaded::Refused { rejection }) =
-                    serde_json::from_value(answer.clone())
+                && let Ok(Loaded::Refused { rejection }) = serde_json::from_value(answer.clone())
             {
                 *self
                     .1

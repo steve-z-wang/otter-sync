@@ -1,5 +1,5 @@
 //! Application host invocation under the caller's transaction context.
-pub use axton_protocols::server_bridge::*;
+use axton_protocols::server_bridge::{Error, HostRequest, Result, code};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::{future::Future, pin::Pin};

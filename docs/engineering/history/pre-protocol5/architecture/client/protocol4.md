@@ -1,6 +1,6 @@
 # Protocol 4 client
 
-Historical carrier reference. Current behavior is owned by [protocol 5](../protocol/0.5.md). This page does not promise support for old local files or an alternate current API.
+Historical carrier reference. Current behavior is owned by [protocol 5](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/protocol/0.5.md). This page does not promise support for old local files or an alternate current API.
 
 ## 1. Introduction and goals
 
@@ -26,7 +26,7 @@ Real SQLite carrier regressions cover overlaps, failure recovery and lifecycle i
 
 ## 5. Building block view
 
-[Bound Store and evidence](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/protocol04.rs), [unit/manifest progress](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/progress04.rs), [receipt settlement](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/settlement04.rs) and [existing downlink worker](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/downlink04.rs) own the native rules. [SQLite](../../../../crates/sqlite/src/lib.rs) owns SQL execution and physical-file locking.
+[Bound Store and evidence](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/protocol04.rs), [unit/manifest progress](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/progress04.rs), [receipt settlement](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/settlement04.rs) and [existing downlink worker](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/downlink04.rs) own the native rules. [SQLite](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/crates/sqlite/src/lib.rs) owns SQL execution and physical-file locking.
 
 ## 6. Runtime view: materialization and settlement
 
@@ -42,4 +42,4 @@ Mutation-local callbacks collect device operations under an owned savepoint befo
 
 Explicit `resetStore` preserves binding and file ownership, atomically clears replica state and creates a new incarnation. It refuses pending work unless explicitly discarded, reports abandoned Calls and fences old effects and observers. Close preserves durable work for reopen.
 
-Bound native APIs reject custom onStore/storeHooks, Load commands, store-policy maps, anonymous mutation batches, legacy ACK/pull seams and additional Stream subscription. Device transactions, named Mutations, observers, schema constraints and declared relations remain. Unbound internal compatibility paths are not a protocol-4 migration API. See [runtime](runtime.md) for task/effect ownership and [storage](storage/README.md) for the SQLite boundary.
+Bound native APIs reject custom onStore/storeHooks, Load commands, store-policy maps, anonymous mutation batches, legacy ACK/pull seams and additional Stream subscription. Device transactions, named Mutations, observers, schema constraints and declared relations remain. Unbound internal compatibility paths are not a protocol-4 migration API. See [runtime](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/client/runtime.md) for task/effect ownership and [storage](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/client/storage/README.md) for the SQLite boundary.

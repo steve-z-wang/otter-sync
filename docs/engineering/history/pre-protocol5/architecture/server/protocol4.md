@@ -1,6 +1,6 @@
 # Protocol 4 server runtime
 
-Historical carrier reference. Current behavior is owned by [protocol 5](../protocol/0.5.md). This page does not promise support for old local files or an alternate current API.
+Historical carrier reference. Current behavior is owned by [protocol 5](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/protocol/0.5.md). This page does not promise support for old local files or an alternate current API.
 
 ## 1. Introduction and Goals
 
@@ -8,7 +8,7 @@ Protocol 4 serves one Stream bound to a persistent Store. Ordinary Query and Fet
 
 ## 3. Context and Scope
 
-[`protocol_v04.rs`](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/src/protocol_v04.rs) is dispatched from the existing Action, Fetch and Pull entrypoints. [`live.rs`](../../../../crates/server/src/live.rs) negotiates the shared `SubscribeIntent` and drains strict Delta pages through the same Pull carrier. The Node host owns the application transaction and current Stream authorization; PostgreSQL persists calls, membership, publication groups and bounded identity manifests.
+[`protocol_v04.rs`](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/src/protocol_v04.rs) is dispatched from the existing Action, Fetch and Pull entrypoints. [`live.rs`](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/crates/server/src/live.rs) negotiates the shared `SubscribeIntent` and drains strict Delta pages through the same Pull carrier. The Node host owns the application transaction and current Stream authorization; PostgreSQL persists calls, membership, publication groups and bounded identity manifests.
 
 `backendId` and `contractId` are stable trusted configuration. The materialization ID uses the shared normalized Model-read descriptor and `projectionGeneration` (default `"1"`), not a hash of the entire client/server Schema. Current Model names, versions, fields, identities, relevant enums and Bootstrap selection participate. Credential refresh does not change these values. A Store's incarnation survives ordinary reopen; explicit reset changes it.
 

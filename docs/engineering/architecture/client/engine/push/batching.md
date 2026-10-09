@@ -6,8 +6,5 @@ A Batch has one Store sequence and immutable member order, digest and input. Eac
 
 ## 5. Building Block View
 
-[Implementation](../../../../../../crates/server/src/mutation_batch.rs) owns this component. [Protocol 5](../../../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[mutation_queue.rs](../../../../../../crates/client/src/mutation_queue.rs) owns client membership and freezing; [sync05/uplink.rs](../../../../../../crates/client/src/sync05/uplink.rs) schedules transmission. [mutation_batch.rs](../../../../../../crates/server/src/mutation_batch.rs) owns server execution. [Protocol 5](../../../protocols/sync.md) owns shared context, delivery and settlement rules.
 
-## 10. Quality Requirements
-
-Changes must preserve the component boundary and the protocol’s commit/failure rules. The joined native gate `integration/v05-sdk/run-host.sh` exercises the generated client, real HTTP/WebSocket backend and SQLite. Installed-package and mobile evidence are separate adoption gates.

@@ -1,8 +1,8 @@
 # Channel membership: 0.2 release boundary
 
-Historical pre-Scope release observations, retained as evidence of the earlier implementation. These API names and measured costs do not describe the unreleased Scope cutover; [current deployment guidance](../../website/docs/backend/deployment.md#scope-membership-cutover) owns that boundary.
+Historical pre-Scope release observations, retained as evidence of the earlier implementation. These API names and measured costs do not describe the unreleased Scope cutover; [current deployment guidance](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/website/docs/backend/deployment.md#scope-membership-cutover) owns that boundary.
 
-Prepared release notes; coordinated release acceptance and publication are pending. [Deployment cutover](../../website/docs/backend/deployment.md#scope-membership-cutover) owns the compatibility matrix and operator sequence. The [design](../superpowers/specs/2026-09-30-channel-tags-removal-design.md) records the binding decisions.
+Prepared release notes; coordinated release acceptance and publication are pending. [Deployment cutover](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/website/docs/backend/deployment.md#scope-membership-cutover) owns the compatibility matrix and operator sequence. The [design](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/superpowers/specs/2026-09-30-channel-tags-removal-design.md) records the binding decisions.
 
 ## Release notes
 
@@ -27,7 +27,7 @@ Oasis's inspected pin is `0.1.1`. Adoption is separate work, targeting exactly `
 3. Coordinate stopped older writers, server migration and backend cutover with per-platform minimum-build floors and the capability gate.
 4. Enable synchronized removal only after that boundary is enforced.
 
-When several Journal domains share one User Channel, tags do not reference-count their access: removing X also removes an X/Y membership. Oasis must decide surviving domain access before declaring removal; automatic cross-Channel holds apply only to separate known Channels. See [Channel selection semantics](../../website/docs/backend/api.md#scopes).
+When several Journal domains share one User Channel, tags do not reference-count their access: removing X also removes an X/Y membership. Oasis must decide surviving domain access before declaring removal; automatic cross-Channel holds apply only to separate known Channels. See [Channel selection semantics](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/website/docs/backend/api.md#scopes).
 
 The adoption task chooses actual build floors and runs Oasis's pin/contract checks. No pin, lock, build number or Oasis code is changed here. A package bump alone does not protect old clients.
 
@@ -43,7 +43,7 @@ Measured locally on an Apple M1 Pro (16 GiB), Node 26.4.0 and PostgreSQL 14.23, 
 | 1,000 | 73.106, 73.211, 77.561 | 8 | 591,952–591,976 | 20 | 108,560 | 21,000 | 0 |
 | 10,000 | 698.491, 699.440, 775.696 | 26 | 5,897,184–5,897,200 | 200 | 1,096,200 | 210,000 | 0 |
 
-These are observations, not latency guarantees. SQL calls include BEGIN/COMMIT and exclude trigger substatements. WAL is cluster insert-LSN difference, including triggers/commit/full-page images. Setup is excluded; there is no concurrent workload or percentile estimate. Pull byte totals include every actual <=50-event response through `to == head`, with no extra empty pull, HTTP framing or compression. Identities use fixed-width one-field keys. Loader counts cover removal and all pulls. See the [harness boundaries](../../integration/performance/channel-removal/README.md) and [exact environment, samples and response bodies](../../integration/performance/channel-removal/evidence.json). Earlier preliminary timings are superseded by this artifact. Retained responses, old tables, log removals and local absence evidence have no TTL or pruning floor.
+These are observations, not latency guarantees. SQL calls include BEGIN/COMMIT and exclude trigger substatements. WAL is cluster insert-LSN difference, including triggers/commit/full-page images. Setup is excluded; there is no concurrent workload or percentile estimate. Pull byte totals include every actual <=50-event response through `to == head`, with no extra empty pull, HTTP framing or compression. Identities use fixed-width one-field keys. Loader counts cover removal and all pulls. See the [harness boundaries](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/integration/performance/channel-removal/README.md) and [exact environment, samples and response bodies](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/integration/performance/channel-removal/evidence.json). Earlier preliminary timings are superseded by this artifact. Retained responses, old tables, log removals and local absence evidence have no TTL or pruning floor.
 
 The repaired production-page capacity diagnostic completed locally: queue 10 observed enqueue p50/p95 0.294/0.417 ms, replay 0.601 ms and 12 SQLite commits; queue 1,000 observed 1.026/2.025 ms, replay 2.866 ms and 1,002 commits. This is a diagnostic, not a correctness gate or throughput guarantee.
 

@@ -31,4 +31,4 @@ The [compiler tests](../../../../crates/compiler/tests/compiler.rs) cover resolv
 
 ## 11. Risks and Technical Debt
 
-`onTargetDelete` supplies device-side effects; it does not execute server business deletes. A handler must delete and invalidate each server-side child itself, and local cascaded deletes are never sent. Core/server still use retained relation metadata to group cascade dependencies into complete finite authority units ([Protocol 5](../protocol/0.5.md)). This grouping preserves apply atomicity; it is not an application cascade implementation.
+`onTargetDelete` supplies device-side effects; it does not execute server business deletes. A handler must delete and invalidate each server-side child itself, and local cascaded deletes are never sent. Core/server still use retained relation metadata to group cascade dependencies into complete finite authority units ([Protocol 5](../protocols/sync.md)). This grouping preserves apply atomicity; it is not an application cascade implementation.

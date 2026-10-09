@@ -20,7 +20,7 @@ The generated API names application Models, Mutations and Queries. The generic S
 | `client.bootstrap()` | Await finite Bootstrap coverage at a captured head. |
 | `client.connection`, `connect`, `close`, `resetStore`, sync/recovery APIs | Lifecycle and recovery within the same Store binding. Reset changes incarnation; ordinary reconnect/reopen does not. |
 
-The [public guide](../../../../../website/docs/frontend/client-api.md) owns runnable TypeScript/Dart examples. TypeScript accepts a typed Input or a callback returning Input. Dart uses the typed invoker's `withTransaction` for that callback form. Both expose local typed `models` inside the callback. The companion scope cannot queue another Mutation, perform remote reads or escape its lifetime. `tx.mutations` supports the same invocation forms inside an outer transaction. React Native uses the generated TypeScript surface with its own transaction adapter.
+The [public guide](../../../../website/docs/frontend/client-api.md) owns runnable TypeScript/Dart examples. TypeScript accepts a typed Input or a callback returning Input. Dart uses the typed invoker's `withTransaction` for that callback form. Both expose local typed `models` inside the callback. The companion scope cannot queue another Mutation, perform remote reads or escape its lifetime. `tx.mutations` supports the same invocation forms inside an outer transaction. React Native uses the generated TypeScript surface with its own transaction adapter.
 
 One local transaction is not a distributed backend transaction: its Calls retain independent outcomes. Backend atomic work belongs in one named Mutation. Standalone direct Model writes and unrelated outer-transaction writes are not companions.
 
@@ -28,9 +28,9 @@ Public anonymous mutations, direct Mutation `call`, queued Query `enqueue`, Load
 
 ## 5. Building Block View
 
-[Compiler emission](../../../../../crates/compiler/src/emit.rs) and [transaction emission](../../../../../crates/compiler/src/emit_transactions.rs) generate typed facades/codecs. [Node runtime](../../../../../packages/frontend/client-js/api/runtime.mts), [Dart client](../../../../../packages/frontend/dart/lib/src/api/client.dart) and the [RN adapter](../../../../../packages/frontend/client-react-native/api/transaction.mts) submit through native Bridges. [Bindings](../bindings.md) own platform loading and per-client actors. [Protocol 5](../../protocol/0.5.md) owns persisted semantics.
+[Compiler emission](../../../../crates/compiler/src/emit.rs) and [transaction emission](../../../../crates/compiler/src/emit_transactions.rs) generate typed facades/codecs. [Node runtime](../../../../packages/frontend/client-js/api/runtime.mts), [Dart client](../../../../packages/frontend/dart/lib/src/api/client.dart) and the [RN adapter](../../../../packages/frontend/client-react-native/api/transaction.mts) submit through native Bridges. [Bindings](bindings.md) own platform loading and per-client actors. [Protocol 5](../protocols/sync.md) owns persisted semantics.
 
-[Command accounting](../../../../../packages/frontend/client-js/api/command-accounting.mts) owns pending work, draining and first command failure for Node, RN and local companion scopes. Each adapter retains its own admission and lifetime guards; Node savepoint rollback restores the enclosing scope's recorded failure.
+[Command accounting](../../../../packages/frontend/client-js/api/command-accounting.mts) owns pending work, draining and first command failure for Node, RN and local companion scopes. Each adapter retains its own admission and lifetime guards; Node savepoint rollback restores the enclosing scope's recorded failure.
 
 ## 6. Runtime View
 
@@ -44,10 +44,10 @@ Language scopes refuse captured/expired capabilities and unawaited operations be
 
 ## 10. Quality Requirements
 
-- Bound files, lifecycle, requests, observations, cache and queues stay independent. Evidence: [native protocol tests](../../../../../crates/sqlite/tests), [RN binding tests](../../../../../integration/bindings/client-react-native) and [protocol-5 host](../../../../../integration/v05-sdk/README.md).
-- Typed input and callback-before-input preserve local atomicity and independent Call fates. Evidence: [generated contract checks](../../../../../integration/action-contract), [Node native Mutation checks](../../../../../packages/frontend/client-js/mutation-native05.test.mjs) and [Dart package tests](../../../../../packages/frontend/dart/test).
-- Ordinary reads cannot overwrite current Stream protection; result snapshots remain independent. Evidence: [Query/Fetch bindings](../../../../../integration/bindings/client-js) and the [protocol-5 host](../../../../../integration/v05-sdk/README.md).
-- Installed generated APIs and bundled libraries work outside the checkout. Evidence: [installed-package runner](../../../../../integration/release/verify-installed.sh).
+- Bound files, lifecycle, requests, observations, cache and queues stay independent. Evidence: [native protocol tests](../../../../crates/sqlite/tests), [RN binding tests](../../../../integration/bindings/client-react-native) and [protocol-5 host](../../../../integration/v05-sdk/README.md).
+- Typed input and callback-before-input preserve local atomicity and independent Call fates. Evidence: [generated contract checks](../../../../integration/action-contract), [Node native Mutation checks](../../../../packages/frontend/client-js/mutation-native05.test.mjs) and [Dart package tests](../../../../packages/frontend/dart/test).
+- Ordinary reads cannot overwrite current Stream protection; result snapshots remain independent. Evidence: [Query/Fetch bindings](../../../../integration/bindings/client-js) and the [protocol-5 host](../../../../integration/v05-sdk/README.md).
+- Installed generated APIs and bundled libraries work outside the checkout. Evidence: [installed-package runner](../../../../integration/release/verify-installed.sh).
 
 
 ## 11. Risks and Technical Debt

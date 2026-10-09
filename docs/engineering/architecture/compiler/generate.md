@@ -12,10 +12,10 @@ Input is `Validated` from [Validate](validate.md). [Descriptor generation](../..
 | --- | --- | --- |
 | `schema.json` | Local Model schema, read versions, requirements, prerequisites and retained compatibility policies | [Client frontend](../client/frontend-interface.md) |
 | `backend.json` | Backend schema, retained operation and Model contracts, Loader names, relations and constraints | [Backend interface](../server/backend-interface.md) |
-| `generated.ts` | Model types, codecs, local Model APIs, typed Mutation input/callback scopes, Query and Fetch facades | [Typed client](../sdks/typed-api/client.md) |
-| `client.ts` | Bound `GeneratedClient` over the selected runtime | [Typed client](../sdks/typed-api/client.md) |
-| `backend.ts` | Versioned Mutation/Query/Loader handlers, typed tracking/publication contexts and `createBackend` | [Typed server](../sdks/typed-api/server.md) |
-| `generated.dart` | Dart Model types, codecs and bound client/transaction facades | [Typed client](../sdks/typed-api/client.md) |
+| `generated.ts` | Model types, codecs, local Model APIs, typed Mutation input/callback scopes, Query and Fetch facades | [Typed client](../frontend-sdk/api.md) |
+| `client.ts` | Bound `GeneratedClient` over the selected runtime | [Typed client](../frontend-sdk/api.md) |
+| `backend.ts` | Versioned Mutation/Query/Loader handlers, typed tracking/publication contexts and `createBackend` | [Typed server](../backend-sdk/api.md) |
+| `generated.dart` | Dart Model types, codecs and bound client/transaction facades | [Typed client](../frontend-sdk/api.md) |
 | `history/models.json` | Retained Model read contracts beside the input schema | [Validate](validate.md) |
 | `history/actions.json` | Retained named Mutation/Query contracts, when operation history exists | [Validate](validate.md) |
 | `history/mutations.json` | Retained compatibility slot-Mutation contracts | [Validate](validate.md) |
@@ -32,7 +32,7 @@ The [CLI](../../../../crates/compiler/src/main.rs) concatenates input `.model` f
 
 Generated local Model APIs forward to runtime ports. Named Mutations accept typed input or a callback returning that input; the callback exposes local companion writes. TypeScript supports both invocation forms directly, while Dart uses the typed invoker's `withTransaction`. The same Mutation forms are available inside an outer transaction. Invocation returns a `Call`; `wait()` observes backend outcome and local settlement.
 
-Queries and Model Fetch use boolean `store`, default true, and await their invocation result and permitted cache commit. Query results use the SDK's shared options; Fetch is generated from each concrete Model's identity and read version. These facades neither enqueue reads nor implicitly track returned Models. The [typed client](../sdks/typed-api/client.md) owns those behaviors and runtime completion rules.
+Queries and Model Fetch use boolean `store`, default true, and await their invocation result and permitted cache commit. Query results use the SDK's shared options; Fetch is generated from each concrete Model's identity and read version. These facades neither enqueue reads nor implicitly track returned Models. The [typed client](../frontend-sdk/api.md) owns those behaviors and runtime completion rules.
 
 Schema inheritance is expanded by validation before emission. Each concrete Model has its own identity, version and inherited fields. `@@bootstrap` is emitted as Model selection metadata; it does not fix membership in a Stream or prevent later delivery of unmarked Models. Tracking and Loader preparation remain backend responsibilities.
 

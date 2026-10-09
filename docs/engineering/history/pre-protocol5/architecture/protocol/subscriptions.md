@@ -1,10 +1,10 @@
 # Subscriptions
 
-Historical carrier reference. Current behavior is owned by [protocol 5](0.5.md). This page does not promise support for old local files or an alternate current API.
+Historical carrier reference. Current behavior is owned by [protocol 5](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/protocol/0.5.md). This page does not promise support for old local files or an alternate current API.
 
 Current bound clients have one Stream fixed at open; [protocol 4](0.4.md) defines their subscribe/ACK and repair evidence. Multiple registered Streams and the legacy frame format below belong to protocol 3.
 
-Engine behavior: [Client / Connection / Controller](../client/connection/controller/README.md), [Server / Connection / Controller](../server/connection/controller.md).
+Engine behavior: [Client / Connection / Controller](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/client/connection/controller/README.md), [Server / Connection / Controller](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/server/connection/controller.md).
 
 ## 3. Context and Scope
 
@@ -26,11 +26,11 @@ Engine behavior: [Client / Connection / Controller](../client/connection/control
 - Stream names must be non-blank strings (`check_stream`: neither empty nor only whitespace) and at least one is required; the same rule refuses a durable registration and a publication intent. `SubscribeRequest` normalizes them (deduplicated, UTF-16 order); `SubscriptionAck::confirms` checks that the acknowledgement names exactly that set. `LiveMessage` tells an acknowledgement (it has a `type`) from a page (it has none).
 - The declaration is checked at the handshake and kept for the session; every frame it streams is loaded at those versions. The acknowledgement is produced inside the negotiating transaction, which also reads each stream's head; streaming starts there.
 
-Code: [core/protocol.rs](../../../../crates/core/src/protocol.rs) (`SubscribeRequest`, `SubscriptionAck`, `LiveMessage`); the server side in [server/live.rs](../../../../crates/server/src/live.rs); the client side in [client/live.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/live.rs).
+Code: [core/protocol.rs](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/crates/core/src/protocol.rs) (`SubscribeRequest`, `SubscriptionAck`, `LiveMessage`); the server side in [server/live.rs](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/crates/server/src/live.rs); the client side in [client/live.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/live.rs).
 
 ## 6. Runtime View
 
-HTTP catches up; the WebSocket carries only what is new. The frame carries every desired stream, initialized or not, and carries no cursors; what each head means to the client depends on what it has committed ([Downlink worker](../client/connection/controller/downlink-worker.md)):
+HTTP catches up; the WebSocket carries only what is new. The frame carries every desired stream, initialized or not, and carries no cursors; what each head means to the client depends on what it has committed ([Downlink worker](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/client/connection/controller/downlink-worker.md)):
 
 | The client's stored boundary for a stream | What the acknowledged head is |
 | --- | --- |
@@ -43,10 +43,10 @@ Catch-up requests name the initialized streams only, so a stream waiting for its
 
 ## 10. Quality Requirements
 
-- Subscribe, acknowledgement and frame decode, normalize and refuse as the shared fixture says. Evidence: [core/tests/contracts.rs](../../../../crates/core/tests/contracts.rs) `live_frames_decode_as_acknowledgement_or_page_and_scopes_normalize` over [fixtures/protocol/live-messages.json](../../../../fixtures/protocol/live-messages.json).
+- Subscribe, acknowledgement and frame decode, normalize and refuse as the shared fixture says. Evidence: [core/tests/contracts.rs](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/crates/core/tests/contracts.rs) `live_frames_decode_as_acknowledgement_or_page_and_scopes_normalize` over [fixtures/protocol/live-messages.json](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/fixtures/protocol/live-messages.json).
 - Only one subscribe frame is accepted and streams are normalized; the acknowledgement carries heads; commits on several streams share one pull and a frame names only what moved. Evidence: [server/tests/runtime.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/runtime.rs) `live_subscribe_requires_one_subscribe_frame_and_normalizes_scopes`, `live_page_progression_checks_every_scope_it_asked_for`; [server/tests/live.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/live.rs) `open_registers_every_scope_before_the_acknowledgement_then_pulls_all_once_from_their_heads`, `a_scope_below_its_head_continues_and_one_at_its_head_ends_the_drain`, `commits_on_several_scopes_share_one_pull_and_the_frame_names_only_what_moved`.
-- A client whose cursors equal the heads does not catch up; one that is behind pulls once and then streams. Evidence: [sqlite/tests/downlink_worker.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/sqlite/tests/downlink_worker.rs) `heads_equal_to_the_cursors_mean_no_catch_up_at_all`, `a_session_subscribes_pulls_only_when_behind_and_then_streams`; both SDKs' live suites ([live.test.mjs](../../../../integration/bindings/client-js/live.test.mjs), [dart/test/live_test.dart](../../../../packages/dart/test/live_test.dart)).
-- An uninitialized stream takes the acknowledged head as its origin and loads nothing older; an initialized one keeps its cursor and catches up; a head below it faults. Evidence: `a_fresh_subscription_initializes_at_the_acknowledged_head_and_loads_no_history`, `an_acknowledgement_at_head_zero_initializes_at_zero`, `a_reconnect_catches_up_from_the_saved_cursor_instead_of_the_new_head`, `a_head_below_the_committed_cursor_is_a_fault_that_rewinds_nothing`, `a_mixed_set_catches_up_one_scope_initializes_another_and_never_asks_for_a_third`; over a real socket, [integration/e2e/subscriptions.test.mjs](../../../../integration/e2e/subscriptions.test.mjs).
+- A client whose cursors equal the heads does not catch up; one that is behind pulls once and then streams. Evidence: [sqlite/tests/downlink_worker.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/sqlite/tests/downlink_worker.rs) `heads_equal_to_the_cursors_mean_no_catch_up_at_all`, `a_session_subscribes_pulls_only_when_behind_and_then_streams`; both SDKs' live suites ([live.test.mjs](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/integration/bindings/client-js/live.test.mjs), [dart/test/live_test.dart](https://github.com/zanminwang/axton/blob/8ad6b3efbf999f148b6dfe7278d7a2c6dd91b643/packages/dart/test/live_test.dart)).
+- An uninitialized stream takes the acknowledged head as its origin and loads nothing older; an initialized one keeps its cursor and catches up; a head below it faults. Evidence: `a_fresh_subscription_initializes_at_the_acknowledged_head_and_loads_no_history`, `an_acknowledgement_at_head_zero_initializes_at_zero`, `a_reconnect_catches_up_from_the_saved_cursor_instead_of_the_new_head`, `a_head_below_the_committed_cursor_is_a_fault_that_rewinds_nothing`, `a_mixed_set_catches_up_one_scope_initializes_another_and_never_asks_for_a_third`; over a real socket, [integration/e2e/subscriptions.test.mjs](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/integration/e2e/subscriptions.test.mjs).
 
 Executed 2026-09-16 (2026-09-25 for the initialization bullet): `cargo test -p axton-core -p axton-server -p axton-sqlite --locked`, the JS and Dart live suites, `bash integration/e2e/run.sh`.
 

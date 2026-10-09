@@ -39,7 +39,7 @@ The URL above is for a simulator using a backend on its host. Configure a reacha
 
 ## Runtime and carrier
 
-Each client is one Rust runtime on its own thread, reached through the [native module](native-module/README.md)'s carrier: `runtimeSubmit` only admits a task, the runtime posts `axtonWake` on the main queue when it has published events, and the Bridge drains and dispatches them on the JavaScript thread. Rust owns scheduling, transactions, the connection lanes, retries, deadlines, credential refresh and subscription status; the package supplies only the platform adapters the runtime asks for as effects: HTTP `fetch`, the native `WebSocket`, timers, the application's `refreshAuth` and prerequisite handlers, and its transaction callbacks. See [SDK bindings](../../../docs/engineering/architecture/sdks/bindings.md) for the contract.
+Each client is one Rust runtime on its own thread, reached through the [native module](native-module/README.md)'s carrier: `runtimeSubmit` only admits a task, the runtime posts `axtonWake` on the main queue when it has published events, and the Bridge drains and dispatches them on the JavaScript thread. Rust owns scheduling, transactions, the connection lanes, retries, deadlines, credential refresh and subscription status; the package supplies only the platform adapters the runtime asks for as effects: HTTP `fetch`, the native `WebSocket`, timers, the application's `refreshAuth` and prerequisite handlers, and its transaction callbacks. See [SDK bindings](../../../docs/engineering/architecture/frontend-sdk/bindings.md) for the contract.
 
 ## Client behavior
 

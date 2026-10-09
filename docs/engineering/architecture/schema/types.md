@@ -28,7 +28,7 @@ Rules:
 - An enum declares non-empty, unique identifier values; a value may carry `@deprecated(reason: "…")`, which reaches generated code only ([Mutations](mutations.md#9-architecture-decisions)).
 - A list element must be a scalar; a list of enums or of lists is refused. A list cannot be nullable.
 - `null` is accepted only for a nullable field.
-- A `DateTime` keeps millisecond precision because a JavaScript `Date` cannot carry more. Normalization drops the sub-millisecond part, moving a pre-1970 instant to the earlier millisecond; generated Dart applies the same truncation before encoding ([Typed API / Client](../sdks/typed-api/client.md)), and every decoded Dart `DateTime` is UTC.
+- A `DateTime` keeps millisecond precision because a JavaScript `Date` cannot carry more. Normalization drops the sub-millisecond part, moving a pre-1970 instant to the earlier millisecond; generated Dart applies the same truncation before encoding ([Typed API / Client](../frontend-sdk/api.md)), and every decoded Dart `DateTime` is UTC.
 
 Code: source names and list/nullable parsing in [compiler/parse.rs](../../../../crates/compiler/src/parse.rs); type resolution in [compiler/validate.rs](../../../../crates/compiler/src/validate.rs); descriptor validation and value normalization in [core/schema.rs](../../../../crates/core/src/schema.rs); language mapping in [compiler/emit.rs](../../../../crates/compiler/src/emit.rs); column types in [client/ddl.rs](../../../../crates/client/src/ddl.rs).
 

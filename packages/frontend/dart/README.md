@@ -21,7 +21,7 @@ hooks:
 
 ## How it runs
 
-The client is a thin carrier over the Rust-owned client runtime. The runtime owns the database, task ordering, both sync lanes, direct calls, retries, timeouts, credential-refresh coordination, and every status it publishes. This package only moves messages and runs the platform work the runtime asks for. See [SDK bindings](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/sdks/bindings.md) for the contract.
+The client is a thin carrier over the Rust-owned client runtime. The runtime owns the database, task ordering, both sync lanes, direct calls, retries, timeouts, credential-refresh coordination, and every status it publishes. This package only moves messages and runs the platform work the runtime asks for. See [SDK bindings](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/frontend-sdk/bindings.md) for the contract.
 
 - **Admission.** Each call submits one complete task through the C ABI (`axton_runtime_submit`). Admission only copies the task into the runtime's mailbox. The returned `Future` settles from the task's `taskCompleted` event.
 - **Wake and drain.** The runtime wakes the isolate through a single `NativeCallable.listener`. The isolate drains the published events in order on its own event loop. Each `taskCompleted` settles its waiter, `observerChanged` feeds subscription and watch streams, `callCompleted` settles `Call` handles, and `report` reaches the connection's `onError`. A handle that a completion names, such as a `Call`, a subscription, or a watch, is registered while that completion is dispatched. A later event in the same batch therefore always finds it.

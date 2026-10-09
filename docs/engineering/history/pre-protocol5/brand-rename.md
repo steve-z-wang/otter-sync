@@ -20,4 +20,4 @@ For disposable development environments, use fresh client database paths and a f
 
 For an environment containing data that must survive, stay on the previous build until a separately tested storage migration is available. Back up both client and backend state; do not delete local databases to upgrade when they contain unsynchronized work or local-only data.
 
-See [client storage](architecture/client/storage/README.md) and [server persistence](architecture/server/persistence.md) for the owning contracts.
+See [client storage](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/client/storage/README.md) and [server persistence](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/server/persistence.md) for the owning contracts.

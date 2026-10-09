@@ -6,11 +6,9 @@ The engine retains original Model operations and projects them over authoritativ
 
 ## 5. Building Block View
 
-[Implementation](../../../../../crates/client/src/settlement05.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[Implementation](../../../../../crates/client/src/settlement05.rs) owns this component. [Protocol 5](../../protocols/sync.md) owns shared context, delivery and settlement rules.
 
-- [loads](../../../history/pre-protocol5/architecture/client/engine/loads.md)
 - [local-operations](local-operations/README.md)
-- [pull](../../../history/pre-protocol5/architecture/client/engine/pull.md)
 - [push](push/README.md)
 - [settlement](settlement.md)
 

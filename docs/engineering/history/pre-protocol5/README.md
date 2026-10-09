@@ -1,6 +1,6 @@
 # Historical documentation
 
-Exact documentation snapshots from baseline `71b14195b897bc8a42f19e0a83d59dfe8fc76677`. The pages span different periods; mixed testing tables are records, not current coverage. Original bodies and execution dates are retained byte-for-byte, including original-relative links. Use the verified reference map below for those links. Current behavior belongs to the [engineering index](../../README.md).
+Documentation snapshots from baseline `71b14195b897bc8a42f19e0a83d59dfe8fc76677`. The pages span different periods; mixed testing tables are records, not current coverage. Historical claims and execution dates are retained; relative links are maintained and source links are pinned to verified snapshots. The reference map below retains original targets. Current behavior belongs to the [engineering index](../../README.md).
 
 | Original path | Stated period or opening context | Snapshot |
 | --- | --- | --- |

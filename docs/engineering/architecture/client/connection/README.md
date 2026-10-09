@@ -6,7 +6,7 @@ The Rust connection schedules authentication, finite HTTP work, live hints, retr
 
 ## 5. Building Block View
 
-[Implementation](../../../../../crates/client/src/runtime/lanes.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[runtime/lanes.rs](../../../../../crates/client/src/runtime/lanes.rs) owns this component. [Protocol 5](../../protocols/sync.md) owns shared context, delivery and settlement rules.
 
 - [controller](controller/README.md)
 - [transport](transport.md)

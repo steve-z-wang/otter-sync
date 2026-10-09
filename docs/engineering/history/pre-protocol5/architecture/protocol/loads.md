@@ -1,12 +1,12 @@
 # Loads
 
-Historical carrier reference. Current behavior is owned by [protocol 5](0.5.md). This page does not promise support for old local files or an alternate current API.
+Historical carrier reference. Current behavior is owned by [protocol 5](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/protocol/0.5.md). This page does not promise support for old local files or an alternate current API.
 
 This is the retained protocol-3 Load carrier. It is not a public 0.4 request path; see [protocol 4](0.4.md) for finite Bootstrap manifests and ordinary reads.
 
 ## 1. Introduction and Goals
 
-`POST /sync/loads` carries pages of native [Loads](../schema/loads.md) ([#173](https://github.com/zanminwang/axton/issues/173)). One request batches ready pages of independent Load jobs, and one response answers each page with its own outcome. The batch is transport grouping only: each item has its own identity, its own backend transaction and its own local application ([guarantees N2, N3, N5](../../guarantees.md#n-native-loads)).
+`POST /sync/loads` carries pages of native [Loads](../schema/loads.md) ([#173](https://github.com/zanminwang/axton/issues/173)). One request batches ready pages of independent Load jobs, and one response answers each page with its own outcome. The batch is transport grouping only: each item has its own identity, its own backend transaction and its own local application ([guarantees N2, N3, N5](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/guarantees.md#n-native-loads)).
 
 ## 3. Context and Scope
 
@@ -48,7 +48,7 @@ An error message is at most 1,024 bytes. A `succeeded` page's `data`, `next` and
 
 ## 5. Building Block View
 
-The wire types (`Continuation`, `LoadNext`, `LoadIntent`, `LoadBatchRequest`, `LoadOutcome`, `LoadError`, `LoadPageResponse`, `LoadBatchResponse`, `LoadPageReply`, `LoadItemError`) and their validators are in [core/loads.rs](../../../../crates/core/src/loads.rs), re-exported from `axton_core`; the bounds are the `LOAD_*` constants of `limits` in [core/protocol.rs](../../../../crates/core/src/protocol.rs). The server's envelope validator and response encoder are in [server/loads.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/src/loads.rs); the HTTP route is in [server/index.mts](../../../../packages/server/index.mts). The client asks for the route as the `load` route of an `http` effect ([Runtime](../client/runtime.md)).
+The wire types (`Continuation`, `LoadNext`, `LoadIntent`, `LoadBatchRequest`, `LoadOutcome`, `LoadError`, `LoadPageResponse`, `LoadBatchResponse`, `LoadPageReply`, `LoadItemError`) and their validators are in [core/loads.rs](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/crates/core/src/loads.rs), re-exported from `axton_core`; the bounds are the `LOAD_*` constants of `limits` in [core/protocol.rs](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/crates/core/src/protocol.rs). The server's envelope validator and response encoder are in [server/loads.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/src/loads.rs); the HTTP route is in [server/index.mts](https://github.com/zanminwang/axton/blob/8ad6b3efbf999f148b6dfe7278d7a2c6dd91b643/packages/server/index.mts). The client asks for the route as the `load` route of an `http` effect ([Runtime](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/client/runtime.md)).
 
 ## 6. Runtime View
 
@@ -70,11 +70,11 @@ The wire types (`Continuation`, `LoadNext`, `LoadIntent`, `LoadBatchRequest`, `L
 
 A bound is never met by silent truncation. A page with more than 1,000 identities or over 1 MiB is the item's `load.page_too_large`. A frozen request that exceeds 1 MiB even as a batch of one is never sent: the client fails that job with `load.request_too_large`. Because every page is bounded, eight full pages always fit one response; the envelope bound is a guard.
 
-**Whole-request failures.** Authentication and envelope failures fail the whole request with the transport's ordinary statuses ([Server transport](../server/connection/transport.md)); the client keeps the frozen pages. Every item outcome, a rejection included, answers `200`.
+**Whole-request failures.** Authentication and envelope failures fail the whole request with the transport's ordinary statuses ([Server transport](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/server/connection/transport.md)); the client keeps the frozen pages. Every item outcome, a rejection included, answers `200`.
 
 ## 10. Quality Requirements
 
-- **`null`, `{state: null}` and nested states round-trip unchanged; state bounds are exact.** Evidence: [core/tests/loads.rs](../../../../crates/core/tests/loads.rs) `first_and_end_null_stays_distinct_from_a_null_state`, `nested_states_round_trip_as_normalized_portable_json`, `continuation_state_is_bounded_portable_json`.
+- **`null`, `{state: null}` and nested states round-trip unchanged; state bounds are exact.** Evidence: [core/tests/loads.rs](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/crates/core/tests/loads.rs) `first_and_end_null_stays_distinct_from_a_null_state`, `nested_states_round_trip_as_normalized_portable_json`, `continuation_state_is_bounded_portable_json`.
 - **Envelopes are structural and bounded, correlation is by ID, and a malformed page fails only its own item.** Evidence: `request_envelopes_are_structural_and_bounded`, `only_correlation_structure_rejects_a_response_envelope`, `a_malformed_page_shape_fails_only_its_own_item`, `pages_carry_declared_identity_lists_and_matching_authority`, `eight_maximal_pages_fit_one_response`, `server_encoding_bounds_item_errors_instead_of_refusing_the_batch`, `loads_never_route_as_actions`.
 
 Verified 2026-09-27 by the host gate (`bash scripts/test.sh`, which runs `cargo test --workspace --locked`); the server side of the envelope is in [Server / Engine / Loads](../server/engine/loads.md#10-quality-requirements).

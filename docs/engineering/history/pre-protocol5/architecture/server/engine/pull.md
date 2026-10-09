@@ -1,6 +1,6 @@
 # Pull
 
-Historical carrier reference. Current responsibilities are owned by [protocol 5](../../protocol/0.5.md). This page describes the old release, not a supported current API.
+Historical carrier reference. Current responsibilities are owned by [protocol 5](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/protocol/0.5.md). This page describes the old release, not a supported current API.
 
 ## 1. Introduction and Goals
 
@@ -8,7 +8,7 @@ Server pull delivers the latest retained Stream/record state after a position. U
 
 ## 5. Building Block View
 
-The six-table [persistence](../persistence.md) separates record metadata, durable tracking and one compacted log row per Stream/record. Scans include both event kinds before the page limit, without joining live members. Removal therefore consumes a page slot and remains deliverable after the domain row disappears.
+The six-table [persistence](https://github.com/zanminwang/axton/blob/71b14195b897bc8a42f19e0a83d59dfe8fc76677/docs/engineering/architecture/server/persistence.md) separates record metadata, durable tracking and one compacted log row per Stream/record. Scans include both event kinds before the page limit, without joining live members. Removal therefore consumes a page slot and remains deliverable after the domain row disappears.
 
 The server groups repeated upsert identities across Streams into one Loader read while keeping every pair's provenance. Stamped null is authority; Loader error is a diagnostic; neither is a membership release. Loaders receive the viewer and identity, never a Stream or tag.
 

@@ -6,12 +6,11 @@ The client projects settled authority with ordered device work and pending optim
 
 ## 5. Building Block View
 
-[Implementation](../../../../crates/client/src/sync05/mod.rs) owns this component. [Protocol 5](../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[Implementation](../../../../crates/client/src/sync05/mod.rs) owns this component. [Protocol 5](../protocols/sync.md) owns shared context, delivery and settlement rules.
 
 - [connection](connection/README.md)
 - [engine](engine/README.md)
 - [frontend-interface](frontend-interface.md)
-- [protocol4](../../history/pre-protocol5/architecture/client/protocol4.md)
 - [runtime](runtime.md)
 - [storage](storage/README.md)
 

@@ -50,11 +50,11 @@ def check_load_guide():
     """Compile the Bootstrap guide's schema, then check its client and backend
     TypeScript and its Dart against the generated code."""
     (source, schema), = snippets('model', [LOAD_GUIDE])
-    with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'packages/dart') as temp:
+    with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'packages/frontend/dart') as temp:
         directory = Path(temp)
         (directory / 'schema.model').write_text(schema)
         subprocess.run([str(ROOT / 'target/debug/axton'), 'compile', str(directory), str(directory / 'generated'),
-                        '--backend-runtime', '../../../server/index.mts',
+                        '--backend-runtime', '../../../../backend/server/index.mts',
                         '--client-runtime', '../../../client-js/index.mts'], cwd=ROOT, check=True)
         print(f'Compiled schema from {source}')
         ts = directory / 'examples.mts'
@@ -71,17 +71,17 @@ import 'generated/generated.dart';
 late GeneratedClient client;
 ''' + '\n'.join(f'// {source}\nFuture<void> example{i}() async {{\n{code}\n}}'
                   for i, (source, code) in enumerate(snippets('dart', [LOAD_GUIDE]))))
-        subprocess.run(['dart', 'analyze', str(dart)], cwd=ROOT / 'packages/dart', check=True)
+        subprocess.run(['dart', 'analyze', str(dart)], cwd=ROOT / 'packages/frontend/dart', check=True)
     print(f"Typechecked {len(snippets('ts', [LOAD_GUIDE]))} TypeScript and {len(snippets('dart', [LOAD_GUIDE]))} Dart Bootstrap guide snippets.")
 
 
 def check():
     # Keep temporary sources within package ancestry so module resolution uses
     # the same installed dependencies and Dart package config as the fixture.
-    with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'packages/dart') as temp:
+    with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'packages/frontend/dart') as temp:
         directory = Path(temp)
         ts = directory / 'examples.mts'
-        ts.write_text('''import { GeneratedClient, PrerequisiteRetry, schema, AdmissionRefused, type StoreConnection } from '../../../integration/e2e/fixtures/round-trip/generated/client.ts';
+        ts.write_text('''import { GeneratedClient, PrerequisiteRetry, schema, AdmissionRefused, type StoreConnection } from '../../../../integration/e2e/fixtures/round-trip/generated/client.ts';
 import type { Transaction } from '../../client-js/index.mts';
 declare const client: GeneratedClient;
 declare const backendUrl: string;
@@ -110,7 +110,7 @@ declare const client: GeneratedClient;
                         '--exactOptionalPropertyTypes', '--skipLibCheck', '--target', 'ES2022',
                         '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
                         '--allowImportingTsExtensions', str(operation)], cwd=ROOT, check=True)
-    with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'packages/dart') as temp:
+    with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'packages/frontend/dart') as temp:
         directory = Path(temp)
         dart = directory / 'examples.dart'
         dart.write_text('''// ignore_for_file: unused_local_variable, unused_import
@@ -118,7 +118,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:axton/axton.dart' show Client;
-import '../../../integration/e2e/fixtures/round-trip/generated/generated.dart';
+import '../../../../integration/e2e/fixtures/round-trip/generated/generated.dart';
 late GeneratedClient client;
 late StreamSubscription<List<Entry>> subscription;
 late HttpClient http;
@@ -133,7 +133,7 @@ Future<String> renewAccessToken() async => '';
 Future<void> uploadFile(dynamic key) async {}
 ''' + '\n'.join(f'// {source}\nFuture<void> example{i}() async {{\n{code}\n}}'
                   for i, (source, code) in enumerate(snippets('dart'))))
-        subprocess.run(['dart', 'analyze', str(dart)], cwd=ROOT / 'packages/dart', check=True)
+        subprocess.run(['dart', 'analyze', str(dart)], cwd=ROOT / 'packages/frontend/dart', check=True)
     with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'integration/action-contract') as temp:
         dart = Path(temp) / 'examples.dart'
         dart.write_text('''// ignore_for_file: unused_local_variable
@@ -146,7 +146,7 @@ late GeneratedClient client;
         backend = Path(temp) / 'backend.mts'
         backend.write_text('''import { PrismaClient, type Prisma } from '@prisma/client';
 import { createBackend, Entry, type Options } from '../generated/backend.ts';
-import { prisma } from '../../../../../packages/postgres/index.mts';
+import { prisma } from '../../../../../packages/backend/postgres/index.mts';
 declare const db: PrismaClient;
 declare const backend: ReturnType<typeof createBackend<Prisma.TransactionClient>>;
 ''' + '\n'.join(f'// {source}\nasync function example{i}() {{\n{code.replace("export const", "const")}\n}}'
@@ -158,7 +158,7 @@ declare const backend: ReturnType<typeof createBackend<Prisma.TransactionClient>
     with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'integration/action-contract') as temp:
         backend = Path(temp) / 'backend.mts'
         backend.write_text('''import { Todo, CallRejected, createBackend, devAuth, type MutationContext, type Mutations, type Queries, type Loaders, type TodoIdentity } from '../backend.ts';
-import type { Database } from '../../../packages/server/index.mts';
+import type { Database } from '../../../packages/backend/server/index.mts';
 type Tx = unknown;
 declare const database: Database<Tx>;
 declare const mutations: Mutations<Tx>;
@@ -188,7 +188,7 @@ declare function loadVisibleTodo(tx: Tx, userId: string, id: TodoIdentity): Prom
         subprocess.run([str(ROOT / 'node_modules/.bin/tsc'), *TSC_FLAGS, str(ts)], cwd=ROOT, check=True)
         dart = directory / 'examples.dart'
         dart.write_text("// ignore_for_file: unused_local_variable\nimport '../generated.dart';\nlate GeneratedClient client;\n" + '\n'.join(f'// {source}\nFuture<void> example{i}() async {{\n{code}\n}}' for i, (source, code) in enumerate(snippets('dart', context='v05'))))
-        subprocess.run(['dart', 'analyze', str(dart)], cwd=ROOT / 'packages/dart', check=True)
+        subprocess.run(['dart', 'analyze', str(dart)], cwd=ROOT / 'packages/frontend/dart', check=True)
     check_load_guide()
     print(f"Typechecked {len(snippets('ts')) + len(snippets('ts', BACKEND_SOURCES))} TypeScript, {len(snippets('ts', context='operation')) + len(snippets('ts', BACKEND_SOURCES, context='operation'))} Mutation/Query TypeScript, {len(snippets('dart'))} Dart and {len(snippets('dart', context='operation'))} Mutation/Query Dart documentation snippets.")
 

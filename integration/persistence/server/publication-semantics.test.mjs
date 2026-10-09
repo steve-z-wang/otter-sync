@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Pool } from "pg";
-import { pg } from "../../../packages/postgres/index.mts";
+import { pg } from "../../../packages/backend/postgres/index.mts";
 import { createBackend } from "../../v05-sdk/backend.ts";
 const native = createRequire(import.meta.url)(
   "../../../bindings/node/axton-node.node",
@@ -29,7 +29,7 @@ async function fixture(body) {
     await admin.query(`SET search_path=${namespace}`);
     await admin.query(
       await readFile(
-        new URL("../../../packages/postgres/migration.sql", import.meta.url),
+        new URL("../../../packages/backend/postgres/migration.sql", import.meta.url),
         "utf8",
       ),
     );

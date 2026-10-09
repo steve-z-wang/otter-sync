@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
-import { Client } from "../../../packages/client-js/index.mts";
+import { Client } from "../../../packages/frontend/client-js/index.mts";
 
 // Worker teardown (#134): the addon's env cleanup hook detaches every runtime
 // opened in a terminated worker's environment, so the actor rolls back its

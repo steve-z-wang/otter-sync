@@ -804,7 +804,7 @@ fn a_local_callback_runs_inside_its_submission_and_its_writes_are_companions() {
         ["companion Entry draft delete", "wire Entry p create"]
     );
     let batch = h.runtime.client().freeze_batch05().unwrap().unwrap();
-    let body = String::from_utf8(axton_core::v05::encode(&batch).unwrap()).unwrap();
+    let body = String::from_utf8(axton_protocols::sync::encode(&batch).unwrap()).unwrap();
     assert!(!body.contains("draft"), "a companion is never sent: {body}");
 }
 

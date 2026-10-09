@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { createBackend } from "../../../packages/server/index.mts";
+import { createBackend } from "../../../packages/backend/server/index.mts";
 const native = createRequire(import.meta.url)(
   "../../../bindings/node/axton-node.node",
 );

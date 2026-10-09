@@ -3,13 +3,13 @@ import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { Pool } from "pg";
-import { answer } from "../../../packages/postgres/index.mts";
-import { pgDriver } from "../../../packages/postgres/src/pg.mts";
-import * as SQL from "../../../packages/postgres/src/sql.mts";
+import { answer } from "../../../packages/backend/postgres/index.mts";
+import { pgDriver } from "../../../packages/backend/postgres/src/pg.mts";
+import * as SQL from "../../../packages/backend/postgres/src/sql.mts";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const driver = pgDriver(pool);
 const ddl = await readFile(
-  new URL("../../../packages/postgres/migration.sql", import.meta.url),
+  new URL("../../../packages/backend/postgres/migration.sql", import.meta.url),
   "utf8",
 );
 after(() => pool.end());
@@ -178,7 +178,7 @@ test("identity ensure rejects a pre-existing-snapshot waiter on a new identity",
 test("fresh DDL whole-file and split prepared statements produce identical catalog", () =>
   namespace(async (whole, wholeSchema) => {
     const { sqlStatements } =
-      await import("../../../packages/postgres/src/statements.mts");
+      await import("../../../packages/backend/postgres/src/statements.mts");
     assert.deepEqual(
       sqlStatements(
         "SELECT 'a;b'; DO $f$ BEGIN PERFORM 1; END $f$; -- ignored;\n",

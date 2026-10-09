@@ -37,8 +37,8 @@ For the To-do example, run from the repository root:
 ```sh
 cargo run -p axton-compiler -- compile \
   examples/todo/models examples/todo/generated/node \
-  --backend-runtime ../../../../packages/server/index.mts \
-  --client-runtime ../../../../packages/client-js/index.mts
+  --backend-runtime ../../../../packages/backend/server/index.mts \
+  --client-runtime ../../../../packages/frontend/client-js/index.mts
 ```
 
 The runtime import paths are relative to the generated output directory. Adjust them when generating into another directory; [examples/todo/generate.sh](https://github.com/zanminwang/axton/blob/main/examples/todo/generate.sh) also emits the React Native client from the same schema. Follow [getting started](../getting-started.md) to build the required native artifacts. Packages are not currently published; the default package specifiers are not a registry installation guide.

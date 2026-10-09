@@ -2,7 +2,7 @@
 //! Cloud acknowledgements are fixtures; the actual PostgreSQL/SDK join lives
 //! in integration/v05-sdk and must pass independently.
 use axton_client::{Client, Operation, OperationKind, RecordKey, Schema};
-use axton_core::v05;
+use axton_protocols::sync as v05;
 use axton_sqlite::SqliteStore;
 use serde_json::{Value, json};
 use std::path::Path;

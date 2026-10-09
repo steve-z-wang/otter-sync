@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {Pool} from 'pg';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {pg,type PgClient} from '../../packages/postgres/index.mts';
+import {pg,type PgClient} from '../../packages/backend/postgres/index.mts';
 import {createBackend,devAuth,CallRejected} from './backend.ts';
 import {GeneratedClient} from './client.ts';
 
@@ -14,7 +14,7 @@ test('generated SDK uses real fresh Query/Fetch, Bootstrap and settled Mutation 
  const pool=new Pool({connectionString:process.env.DATABASE_URL});
  const dir=await mkdtemp(join(tmpdir(),'axton-sdk-host-'));
  let queries=0,bootstraps=0,invalidIdentity=false;
- await pool.query(await readFile(new URL('../../packages/postgres/migration.sql',import.meta.url),'utf8'));
+ await pool.query(await readFile(new URL('../../packages/backend/postgres/migration.sql',import.meta.url),'utf8'));
  await pool.query('CREATE TABLE sdk_entry(id text PRIMARY KEY,text text NOT NULL)');
  const backend=createBackend<PgClient>({database:pg(pool),authenticate:devAuth(),protocol5:{authorizeStream:(viewer,stream)=>stream===`User:${viewer}`},mutations:{
   async publish({ctx,args}) {

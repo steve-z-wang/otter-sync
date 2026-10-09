@@ -16,7 +16,7 @@ Build the native libraries with `bash scripts/build.sh`. TypeScript uses the Nod
 
 ## Flutter native integration
 
-A released `axton` package's build hook bundles the prebuilt native library for iOS devices (arm64), iOS simulators (arm64 and x64) and Android (arm64-v8a, armeabi-v7a and x86_64). It downloads the library of the package's version from the AXTON GitHub release, checks its SHA-256 and caches it; the application needs no linker settings and no `libraryPath`. See the [package README](https://github.com/zanminwang/axton/blob/main/packages/dart/README.md#native-library) to build from local library files instead.
+A released `axton` package's build hook bundles the prebuilt native library for iOS devices (arm64), iOS simulators (arm64 and x64) and Android (arm64-v8a, armeabi-v7a and x86_64). It downloads the library of the package's version from the AXTON GitHub release, checks its SHA-256 and caches it; the application needs no linker settings and no `libraryPath`. See the [package README](https://github.com/zanminwang/axton/blob/main/packages/frontend/dart/README.md#native-library) to build from local library files instead.
 
 The repository includes a simulator integration harness. It requires Xcode and a usable installed iOS runtime:
 
@@ -30,11 +30,11 @@ The harness builds the simulator libraries, stages the `axton` package as a rele
 
 The repository includes a React Native TypeScript adapter, reusable Expo native module, and a two-simulator integration harness. Use a native Expo build; Expo Go does not contain AXTON's Rust library. This integration currently targets arm64 iOS simulators and is consumed from a repository checkout.
 
-[`databasePath(name = "axton.sqlite"): Promise<string>`](https://github.com/zanminwang/axton/blob/main/packages/client-react-native/README.md) resolves a basename under persistent Application Support storage, creates the parent directory, and rejects invalid path names. Keep that path stable across launches so local records, queued calls and client identity can be reopened.
+[`databasePath(name = "axton.sqlite"): Promise<string>`](https://github.com/zanminwang/axton/blob/main/packages/frontend/client-react-native/README.md) resolves a basename under persistent Application Support storage, creates the parent directory, and rejects invalid path names. Keep that path stable across launches so local records, queued calls and client identity can be reopened.
 
 Generated read/watch/Mutation/Query/transaction APIs are shared with Node. React Native's runtime transaction does not expose nested savepoints. Native WebSocket failures do not expose a structured HTTP status; HTTP 401 refresh and application-managed socket credentials are documented separately in the package guide. Background execution while iOS suspends the app is not promised.
 
-The runnable demo is the [To-do example](https://github.com/zanminwang/axton/blob/main/examples/todo/README.md): two simulators, local writes, offline work and synchronization through the example backend ([getting started](../getting-started.md)). See the [package guide](https://github.com/zanminwang/axton/blob/main/packages/client-react-native/README.md) for installation and API limits, and the [SDK integration harness](https://github.com/zanminwang/axton/blob/main/integration/platform/react-native/README.md) for exact build/run steps and runtime evidence. The simulator sequence uses embedded JavaScript and actual network interruption; host tests or native linking alone do not establish completion.
+The runnable demo is the [To-do example](https://github.com/zanminwang/axton/blob/main/examples/todo/README.md): two simulators, local writes, offline work and synchronization through the example backend ([getting started](../getting-started.md)). See the [package guide](https://github.com/zanminwang/axton/blob/main/packages/frontend/client-react-native/README.md) for installation and API limits, and the [SDK integration harness](https://github.com/zanminwang/axton/blob/main/integration/platform/react-native/README.md) for exact build/run steps and runtime evidence. The simulator sequence uses embedded JavaScript and actual network interruption; host tests or native linking alone do not establish completion.
 
 ## Verification
 

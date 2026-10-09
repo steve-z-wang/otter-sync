@@ -32,6 +32,7 @@ name = "axton-client"
 version = "0.5.4"
 dependencies = [
  "axton-core",
+ "axton-protocols",
  "chrono",
  "serde",
  "serde_json",
@@ -56,7 +57,6 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
- "sha2",
  "thiserror",
  "uuid",
 ]
@@ -78,10 +78,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "axton-protocols"
+version = "0.5.4"
+dependencies = [
+ "axton-core",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "axton-server"
 version = "0.5.4"
 dependencies = [
  "axton-core",
+ "axton-protocols",
  "serde",
  "serde_json",
  "thiserror",
@@ -95,6 +106,7 @@ dependencies = [
  "axton-binding",
  "axton-client",
  "axton-core",
+ "axton-protocols",
  "axton-server",
  "axton-sqlite",
  "serde_json",
@@ -107,6 +119,7 @@ version = "0.5.4"
 dependencies = [
  "axton-client",
  "axton-core",
+ "axton-protocols",
  "chrono",
  "rusqlite",
  "serde_json",

@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
-import { Client } from "../../packages/client-js/index.mts";
-import { Bridge } from "../../packages/client-js/bridge.mts";
+import { Client } from "../../packages/frontend/client-js/index.mts";
+import { Bridge } from "../../packages/frontend/client-js/bindings/bridge.mts";
 import {
   GeneratedClient,
   schema,
@@ -17,7 +17,7 @@ import {
 import { GeneratedClient as RolloverClient } from "./rollover/client.ts";
 import { GeneratedClient as VersionedClient } from "./versioned/client.ts";
 import { host } from "./server.mjs";
-import { isRetryableTransactionError } from "../../packages/server/retryable.mts";
+import { isRetryableTransactionError } from "../../packages/backend/server/bindings/retryable.mts";
 
 const assertReportedExhaustion = (h) => {
   const escaped = h.transactions.filter((tx) => tx.outcome === "escaped");
@@ -490,8 +490,9 @@ if (process.argv[2] === "enqueue-child") {
         { text: "later direct" },
       );
       h.loseNext();
-      await a.connect({ url: h.url, token: "alice" });
       await b.connect({ url: h.url, token: "alice" });
+      await b.bootstrap();
+      await a.connect({ url: h.url, token: "alice" });
       const [yes, no, priv] = await Promise.all([
         accepted.wait(),
         refused.wait(),
@@ -526,6 +527,13 @@ if (process.argv[2] === "enqueue-child") {
       assert.equal(submitted.protocol, 5);
       assert.equal(submitted.mutations.length, 3);
       await b.bootstrap();
+      // A's receipt and B's initial Bootstrap do not fence B's live delivery.
+      await until(
+        async () =>
+          (await b.models.entry.get({ id: "joined-accepted" }))?.text ===
+          "canonical",
+        "device B receives accepted Entry",
+      );
       assert.equal(
         (await b.models.entry.get({ id: "joined-accepted" })).text,
         "canonical",

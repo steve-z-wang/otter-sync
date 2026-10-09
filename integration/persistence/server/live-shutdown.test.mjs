@@ -7,8 +7,8 @@ import { randomUUID } from "node:crypto";
 import { setImmediate as turn } from "node:timers/promises";
 import { Pool } from "pg";
 import { WebSocket } from "ws";
-import { createBackend } from "../../../packages/server/index.mts";
-import { pg } from "../../../packages/postgres/index.mts";
+import { createBackend } from "../../../packages/backend/server/index.mts";
+import { pg } from "../../../packages/backend/postgres/index.mts";
 
 const native = createRequire(import.meta.url)(
   "../../../bindings/node/axton-node.node",
@@ -36,7 +36,7 @@ const gate = () => {
 before(async () => {
   await admin.query(
     await readFile(
-      new URL("../../../packages/postgres/migration.sql", import.meta.url),
+      new URL("../../../packages/backend/postgres/migration.sql", import.meta.url),
       "utf8",
     ),
   );

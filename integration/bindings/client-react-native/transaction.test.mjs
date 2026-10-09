@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as module from '../../../packages/client-react-native/transaction.mts';
+import * as module from '../../../packages/frontend/client-react-native/api/transaction.mts';
 
 test('mobile transaction adapter is available without a Node async context', () => {
   assert.equal(typeof module?.Transaction, 'function');

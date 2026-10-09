@@ -5,10 +5,8 @@ use crate::{
     queue::OpKind,
     *,
 };
-use axton_core::{
-    ActionInputDescriptor, canonical_json, normalize_action_args,
-    v05::{self, Validate},
-};
+use axton_core::{ActionInputDescriptor, canonical_json, normalize_action_args};
+use axton_protocols::sync::{self as v05, Validate};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 pub(crate) fn text<T: serde::Serialize>(v: &T) -> Result<Value> {

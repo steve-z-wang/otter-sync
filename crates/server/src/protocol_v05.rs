@@ -1,22 +1,15 @@
-//! Protocol-5 carrier admission and publication adapter. Envelopes belong to core.
+//! Protocol-5 carrier admission and publication adapter. Envelopes belong to axton_protocols::sync.
 use crate::{
     Config, Host, HostResult, Result,
     host::{HostExt, HostRequest},
     internal, request_invalid,
 };
-use axton_core::{ActionInputDescriptor, CallKind, v05};
+use axton_core::{ActionInputDescriptor, CallKind};
+use axton_protocols::sync as v05;
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
 
-/// Trusted carrier constructed only after protocol-5 principal/Store/Stream admission.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HandlerContext {
-    pub owner: String,
-    pub stream: String,
-    pub store_id: String,
-    pub materialization: String,
-}
+pub use axton_protocols::server_bridge::HandlerContext;
 pub(crate) fn handler_context(owner: &str, context: &v05::RequestContext) -> HandlerContext {
     HandlerContext {
         owner: owner.into(),

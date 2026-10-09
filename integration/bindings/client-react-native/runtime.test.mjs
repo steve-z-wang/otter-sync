@@ -6,8 +6,8 @@ import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Transaction } from "../../../packages/client-react-native/transaction.mts";
-import { createClient } from "../../../packages/client-js/runtime.mts";
+import { Transaction } from "../../../packages/frontend/client-react-native/api/transaction.mts";
+import { createClient } from "../../../packages/frontend/client-js/api/runtime.mts";
 import { openStore, offlineNetwork } from "../client-js/store-fixture.mjs";
 
 const native = createRequire(import.meta.url)(

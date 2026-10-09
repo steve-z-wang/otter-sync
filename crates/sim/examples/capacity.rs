@@ -1,6 +1,7 @@
 //! Reproducible diagnostic, not a throughput guarantee. Each enqueue is a real SQLite commit.
 use axton_client::Client;
-use axton_core::{Schema, v05};
+use axton_core::Schema;
+use axton_protocols::sync as v05;
 use axton_sqlite::SqliteStore;
 use serde_json::{Value, json};
 use std::time::Instant;

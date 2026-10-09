@@ -33,8 +33,8 @@ test("the axton launcher knows the same host targets", () => {
 });
 
 test("the SDK floors match every manifest", () => {
-  for (const directory of ["native", "server", "client-js", "postgres", "cli"]) {
+  for (const directory of ["native", "backend/server", "frontend/client-js", "backend/postgres", "cli"]) {
     assert.equal(json(`packages/${directory}/package.json`).engines.node, targets.floors.node, directory);
   }
-  assert.match(read("packages/dart/pubspec.yaml"), new RegExp(`sdk: '${targets.floors.dart} <4\\.0\\.0'`));
+  assert.match(read("packages/frontend/dart/pubspec.yaml"), new RegExp(`sdk: '${targets.floors.dart} <4\\.0\\.0'`));
 });

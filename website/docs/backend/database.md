@@ -2,7 +2,7 @@
 
 AXTON's backend runs on PostgreSQL. Business writes, explicit publications, Stream membership and durable Mutation receipts share the application transaction. Local client storage is SQLite regardless.
 
-`@axtonjs/postgres` (`packages/postgres`) holds every statement AXTON runs, the metadata migration and one small driver interface. You pick the shim for the tool your application already uses to talk to PostgreSQL; handlers and loaders receive that tool's own transaction object.
+`@axtonjs/postgres` (`packages/backend/postgres`) holds every statement AXTON runs, the metadata migration and one small driver interface. You pick the shim for the tool your application already uses to talk to PostgreSQL; handlers and loaders receive that tool's own transaction object.
 
 ## Pick a shim
 
@@ -13,17 +13,17 @@ AXTON's backend runs on PostgreSQL. Business writes, explicit publications, Stre
 | [Drizzle](https://orm.drizzle.team/) over node-postgres | `drizzle(db)` | the Drizzle transaction |
 
 ```ts
-import { prisma } from '../../packages/postgres/index.mts';
+import { prisma } from '../../packages/backend/postgres/index.mts';
 
 const database = prisma(db, { retries: 3, timeout: 20_000 });
 // Pass database to generated createBackend({ database, ... }).
 ```
 
-`db` is your Prisma client; `pg(pool)` takes a `pg.Pool` and `drizzle(db)` the database returned by `drizzle-orm/node-postgres`. The import above uses the To-do example's directory depth. The package exports `pg` and `prisma` from its root and from `@axtonjs/postgres/pg` and `@axtonjs/postgres/prisma`; `drizzle` imports `drizzle-orm`, so it is exported only from `@axtonjs/postgres/drizzle` (`packages/postgres/src/drizzle.mts`), and the migration is `@axtonjs/postgres/migration.sql`. Every shim accepts the same options: `retries` (serialization-failure retries after the first attempt, default 3) and `timeout` (milliseconds, default 20,000, applied where the tool has a transaction timeout). Each runs its transactions at Serializable, with no option to choose another level, and retries PostgreSQL `40001` / `40P01` (Prisma `P2034`, or `P2010` carrying one of those codes, including a Prisma 7 driver adapter's write conflict); other failures propagate immediately. Serializable means a handler needs no row locks to stay correct: when two transactions would produce an outcome no serial order could, PostgreSQL aborts one with `40001` and the shim runs it again after a short random wait (below 20 ms, then 40, then 80). A retry runs your whole body again, so arrange irreversible side effects through your own outbox. When the retries run out, the call fails as a server error, never a rejection, and a queued call is sent again later.
+`db` is your Prisma client; `pg(pool)` takes a `pg.Pool` and `drizzle(db)` the database returned by `drizzle-orm/node-postgres`. The import above uses the To-do example's directory depth. The package exports `pg` and `prisma` from its root and from `@axtonjs/postgres/pg` and `@axtonjs/postgres/prisma`; `drizzle` imports `drizzle-orm`, so it is exported only from `@axtonjs/postgres/drizzle` (`packages/backend/postgres/src/drizzle.mts`), and the migration is `@axtonjs/postgres/migration.sql`. Every shim accepts the same options: `retries` (serialization-failure retries after the first attempt, default 3) and `timeout` (milliseconds, default 20,000, applied where the tool has a transaction timeout). Each runs its transactions at Serializable, with no option to choose another level, and retries PostgreSQL `40001` / `40P01` (Prisma `P2034`, or `P2010` carrying one of those codes, including a Prisma 7 driver adapter's write conflict); other failures propagate immediately. Serializable means a handler needs no row locks to stay correct: when two transactions would produce an outcome no serial order could, PostgreSQL aborts one with `40001` and the shim runs it again after a short random wait (below 20 ms, then 40, then 80). A retry runs your whole body again, so arrange irreversible side effects through your own outbox. When the retries run out, the call fails as a server error, never a rejection, and a queued call is sent again later.
 
 ## Apply the migration
 
-Apply [migration.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migration.sql) to a fresh database using your deployment migration process before sync traffic. Apply the whole file transactionally, for example `psql -v ON_ERROR_STOP=1 -f migration.sql`. It installs Store, MutationResult, StreamRecord, immutable DeliveryPlan/DeliveryUnit metadata and the persisted publication fence. Business tables remain application-owned. Fresh DDL refuses installed older layouts rather than creating parallel empty truth. Installed legacy layouts are refused intact: protocol 5 requires a separately adopted fresh framework namespace. There is no production migration in this candidate.
+Apply [migration.sql](https://github.com/zanminwang/axton/blob/main/packages/backend/postgres/migration.sql) to a fresh database using your deployment migration process before sync traffic. Apply the whole file transactionally, for example `psql -v ON_ERROR_STOP=1 -f migration.sql`. It installs Store, MutationResult, StreamRecord, immutable DeliveryPlan/DeliveryUnit metadata and the persisted publication fence. Business tables remain application-owned. Fresh DDL refuses installed older layouts rather than creating parallel empty truth. Installed legacy layouts are refused intact: protocol 5 requires a separately adopted fresh framework namespace. There is no production migration in this candidate.
 
 ## The driver interface
 

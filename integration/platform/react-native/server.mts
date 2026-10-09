@@ -5,8 +5,8 @@ import {
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect as netConnect, type Socket } from "node:net";
-import { prisma } from "../../../packages/postgres/index.mts";
-import { sqlStatements } from "../../../packages/postgres/src/statements.mts";
+import { prisma } from "../../../packages/backend/postgres/index.mts";
+import { sqlStatements } from "../../../packages/backend/postgres/src/statements.mts";
 import {
   createBackend,
   devAuth,
@@ -49,7 +49,7 @@ const backend = createBackend({
 });
 const migration = await readFile(
   new URL(
-    "../../../packages/postgres/migration.sql",
+    "../../../packages/backend/postgres/migration.sql",
     import.meta.url,
   ),
   "utf8",

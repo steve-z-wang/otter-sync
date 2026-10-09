@@ -1,4 +1,4 @@
-use axton_core::v05::{self, DeltaRequest, RequestContext};
+use axton_protocols::sync::{self as v05, DeltaRequest, RequestContext};
 use axton_server::{Config, Host, HostResult};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, sync::Mutex};

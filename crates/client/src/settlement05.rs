@@ -28,7 +28,7 @@ impl<S: ClientStore> Engine<'_, S> {
 use crate::engine::as_u64;
 use crate::mutation_queue::{decode, text};
 use crate::queue::OpKind;
-use axton_core::v05::{self, Validate};
+use axton_protocols::sync::{self as v05, Validate};
 use std::collections::BTreeMap;
 #[derive(Clone, Debug)]
 pub struct PendingSettlement05 {

@@ -14,7 +14,7 @@ import {
   type RecordDeclaration,
 } from "./backend.ts";
 import type { Todo } from "./generated.ts";
-import type { StreamIntent } from "../../packages/server/host-contract.mts";
+import type { StreamIntent } from "../../packages/backend/server/bindings/host-contract.mts";
 
 test("generated backend decodes Date values and declares canonical identities through its handles", async () => {
   const first = "2026-01-01T00:00:00.000Z";

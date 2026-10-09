@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { WebSocketServer } from "ws";
-import * as runtime from "../../../packages/client-js/index.mts";
-import { createServerConnection } from "../../../packages/client-js/live.mts";
+import * as runtime from "../../../packages/frontend/client-js/index.mts";
+import { createServerConnection } from "../../../packages/frontend/client-js/bindings/live.mts";
 
 const timeout = (p) =>
   Promise.race([

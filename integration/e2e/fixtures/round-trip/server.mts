@@ -1,7 +1,7 @@
 import { PrismaClient, type Prisma } from "@prisma/client";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { prisma } from "../../../../packages/postgres/index.mts";
+import { prisma } from "../../../../packages/backend/postgres/index.mts";
 import {
   createBackend,
   devAuth,
@@ -11,10 +11,10 @@ import {
   type Loaders,
 } from "./generated/backend.ts";
 import { schema } from "./generated/generated.ts";
-import { sqlStatements } from "../../../../packages/postgres/src/statements.mts";
+import { sqlStatements } from "../../../../packages/backend/postgres/src/statements.mts";
 
 import { drainedDatabase } from "../../lifecycle.mts";
-import { isRetryableTransactionError } from "../../../../packages/server/index.mts";
+import { isRetryableTransactionError } from "../../../../packages/backend/server/index.mts";
 
 type Tx = Prisma.TransactionClient;
 
@@ -101,7 +101,7 @@ export async function createExample() {
     },
     async initialize() {
       const migration = await readFile(
-        new URL("../../../../packages/postgres/migration.sql", import.meta.url),
+        new URL("../../../../packages/backend/postgres/migration.sql", import.meta.url),
         "utf8",
       );
       // Prisma runs one statement per call.

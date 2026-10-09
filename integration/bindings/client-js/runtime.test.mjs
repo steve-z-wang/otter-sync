@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Client } from '../../../packages/client-js/index.mts';
+import { Client } from '../../../packages/frontend/client-js/index.mts';
 
 const schema = JSON.parse(await readFile(new URL('../../../fixtures/schemas/entry.json', import.meta.url), 'utf8'));
 const edit=(id,text)=>({entry:{id,text}});
@@ -153,8 +153,8 @@ test('a watch listener that throws is reported to onError and hears every later 
 
 /** A client over a scripted runtime that answers `watch` with observer 3 and records every task. */
 async function scriptedWatchClient() {
- const { createClient } = await import('../../../packages/client-js/runtime.mts');
- const { Transaction } = await import('../../../packages/client-js/transaction.mts');
+ const { createClient } = await import('../../../packages/frontend/client-js/api/runtime.mts');
+ const { Transaction } = await import('../../../packages/frontend/client-js/api/transaction.mts');
  let wake;
  const outbox = [];
  const tasks = [];

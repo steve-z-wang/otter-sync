@@ -6,10 +6,8 @@ use crate::{
     protocol_v05::{Publication05, call},
     request_invalid, storage_invalid,
 };
-use axton_core::{
-    canonical_json,
-    v05::{self, Validate},
-};
+use axton_core::canonical_json;
+use axton_protocols::sync::{self as v05, Validate};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;

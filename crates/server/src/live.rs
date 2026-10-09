@@ -45,7 +45,7 @@ pub struct StreamState {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Live05Progress {
-    header: axton_core::v05::DeliveryHeader,
+    header: axton_protocols::sync::DeliveryHeader,
     next_unit: u64,
     parts: BTreeSet<u64>,
 }
@@ -59,7 +59,7 @@ struct Live05Progress {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Subscriptions {
     #[serde(default)]
-    context05: Option<axton_core::v05::RequestContext>,
+    context05: Option<axton_protocols::sync::RequestContext>,
     #[serde(default)]
     progress05: Option<Live05Progress>,
     streams: Vec<StreamState>,
@@ -73,12 +73,12 @@ impl Subscriptions {
         &self.streams
     }
     pub fn open05(
-        context: axton_core::v05::RequestContext,
+        context: axton_protocols::sync::RequestContext,
         head: u64,
         response: String,
     ) -> (Self, Vec<LiveAction>) {
         let stream = context.stream.clone();
-        let request = serde_json::to_string(&axton_core::v05::DeltaRequest {
+        let request = serde_json::to_string(&axton_protocols::sync::DeltaRequest {
             context: context.clone(),
             after: head,
             through: head,
@@ -106,7 +106,7 @@ impl Subscriptions {
         )
     }
     fn handle05(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
-        use axton_core::v05;
+        use axton_protocols::sync as v05;
         if self.closed {
             return Ok(vec![]);
         }
@@ -241,9 +241,9 @@ pub async fn negotiate05(
     host: &impl Host,
 ) -> Result<(Subscriptions, Vec<LiveAction>)> {
     let response = crate::handshake05(config, owner, bytes, host).await?;
-    let ack: axton_core::v05::HandshakeResponse =
-        axton_core::v05::decode(response.as_bytes()).map_err(crate::internal)?;
-    let context = axton_core::v05::RequestContext {
+    let ack: axton_protocols::sync::HandshakeResponse =
+        axton_protocols::sync::decode(response.as_bytes()).map_err(crate::internal)?;
+    let context = axton_protocols::sync::RequestContext {
         protocol: 5,
         store_id: ack.store_id,
         stream: ack.stream,

@@ -26,13 +26,13 @@ bash scripts/build.sh
 For Dart tests, also install package dependencies and select the native library:
 
 ```sh
-(cd packages/dart && dart pub get)
+(cd packages/frontend/dart && dart pub get)
 case "$(uname -s)" in
   Darwin) export AXTON_LIBRARY="$PWD/target/debug/libaxton_dart.dylib" ;;
   Linux) export AXTON_LIBRARY="$PWD/target/debug/libaxton_dart.so" ;;
 esac
 export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
-(cd packages/dart && dart analyze && dart test)
+(cd packages/frontend/dart && dart analyze && dart test)
 ```
 
 `AXTON_LIBRARY` is the library the SDK tests load and `AXTON_DART_LIBRARY` the one the generated-API, Action and end-to-end Dart clients load. The Dart SDK calls the library's C ABI from the test's own isolate; each client's database work runs on a native runtime thread, and no worker isolate is started ([Bindings](../architecture/sdks/bindings.md#5-building-block-view)).

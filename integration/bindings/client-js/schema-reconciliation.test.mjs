@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,readFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {Client} from '../../../packages/client-js/index.mts';
+import {Client} from '../../../packages/frontend/client-js/index.mts';
 import {openStore} from './store-fixture.mjs';
 const schema=JSON.parse(await readFile(new URL('../../../fixtures/schemas/entry.json',import.meta.url),'utf8'));
 schema.actions=[{name:'Edit',kind:'mutation',version:1,inputs:[{kind:'model',name:'entry',model:'Entry',operation:'update',cardinality:'single',allowedFields:['text','note']}],outputs:[]}];

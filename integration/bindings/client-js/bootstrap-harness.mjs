@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createClient } from "../../../packages/client-js/runtime.mts";
+import { createClient } from "../../../packages/frontend/client-js/api/runtime.mts";
 import {
   openStore,
   offlineNetwork,

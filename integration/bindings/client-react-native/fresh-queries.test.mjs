@@ -1,3 +1,3 @@
-import { Transaction } from "../../../packages/client-react-native/transaction.mts";
+import { Transaction } from "../../../packages/frontend/client-react-native/api/transaction.mts";
 import { invocationTests } from "../client-js/invocation-fixture.mjs";
 invocationTests(Transaction);

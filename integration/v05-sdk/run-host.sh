@@ -5,9 +5,9 @@ source "$root/scripts/env.sh"
 cd "$root"
 # Build this checkout; a binary from another worktree is not acceptance evidence.
 bash scripts/build.sh
-cargo run -p axton-compiler --locked -- compile integration/v05-sdk/schema integration/v05-sdk --backend-runtime ../../packages/server/index.mts --client-runtime ../../packages/client-js/index.mts
-cargo run -p axton-compiler --locked -- compile integration/v05-sdk/rollover/schema integration/v05-sdk/rollover --backend-runtime ../../../packages/server/index.mts --client-runtime ../../../packages/client-js/index.mts
-cargo run -p axton-compiler --locked -- compile integration/v05-sdk/versioned/schema integration/v05-sdk/versioned --backend-runtime ../../../packages/server/index.mts --client-runtime ../../../packages/client-js/index.mts
+cargo run -p axton-compiler --locked -- compile integration/v05-sdk/schema integration/v05-sdk --backend-runtime ../../packages/backend/server/index.mts --client-runtime ../../packages/frontend/client-js/index.mts
+cargo run -p axton-compiler --locked -- compile integration/v05-sdk/rollover/schema integration/v05-sdk/rollover --backend-runtime ../../../packages/backend/server/index.mts --client-runtime ../../../packages/frontend/client-js/index.mts
+cargo run -p axton-compiler --locked -- compile integration/v05-sdk/versioned/schema integration/v05-sdk/versioned --backend-runtime ../../../packages/backend/server/index.mts --client-runtime ../../../packages/frontend/client-js/index.mts
 "$root/node_modules/.bin/tsc" --noEmit --strict --exactOptionalPropertyTypes --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions integration/v05-sdk/backend-positive.ts integration/v05-sdk/versioned/backend-positive.ts
 dart pub get --directory integration/v05-sdk
 dart analyze integration/v05-sdk/generated.dart integration/v05-sdk/client.dart

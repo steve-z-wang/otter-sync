@@ -7,8 +7,8 @@ source "$root/scripts/env.sh"
 bash "$root/scripts/build.sh"
 (cd "$root" && cargo run -p axton-compiler --locked -- compile \
  integration/e2e/fixtures/round-trip/models integration/e2e/fixtures/round-trip/generated \
- --backend-runtime ../../../../../packages/server/index.mts \
- --client-runtime ../../../../../packages/client-js/index.mts)
+ --backend-runtime ../../../../../packages/backend/server/index.mts \
+ --client-runtime ../../../../../packages/frontend/client-js/index.mts)
 (cd "$root/integration/e2e/fixtures/round-trip" && npm ci && npm run generate)
 cluster="$(mktemp -d "${TMPDIR:-/tmp}/axton-fixture-pg.XXXXXX")"
 cleanup(){ pg_ctl -D "$cluster/data" -m immediate stop >/dev/null 2>&1 || true; rm -rf -- "$cluster"; }

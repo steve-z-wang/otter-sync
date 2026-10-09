@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Pool } from "pg";
-import { pg, type PgClient } from "../../packages/postgres/index.mts";
+import { pg, type PgClient } from "../../packages/backend/postgres/index.mts";
 import { createBackend, devAuth } from "../action-runtime-dart/backend.ts";
 
 test(
@@ -22,7 +22,7 @@ test(
     });
     await pool.query(
       await readFile(
-        new URL("../../packages/postgres/migration.sql", import.meta.url),
+        new URL("../../packages/backend/postgres/migration.sql", import.meta.url),
         "utf8",
       ),
     );

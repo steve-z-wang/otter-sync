@@ -1,6 +1,6 @@
 import * as FileSystem from "expo-file-system/legacy";
 import { requireNativeModule } from "expo-modules-core";
-import { databasePath } from "../../../packages/client-react-native/index";
+import { databasePath } from "../../../packages/frontend/client-react-native/index";
 import { GeneratedClient } from "./generated/client";
 
 type Config = {

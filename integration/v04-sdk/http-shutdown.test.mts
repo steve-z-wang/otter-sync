@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as turn } from "node:timers/promises";
 import { Pool } from "pg";
-import { pg, type PgClient } from "../../packages/postgres/index.mts";
+import { pg, type PgClient } from "../../packages/backend/postgres/index.mts";
 import { createBackend, devAuth } from "./backend.ts";
 import { GeneratedClient } from "./client.ts";
 
@@ -39,7 +39,7 @@ test("listener close drains an admitted HTTP Fetch after the native requester cl
   try {
     await pool.query(
       await readFile(
-        new URL("../../packages/postgres/migration.sql", import.meta.url),
+        new URL("../../packages/backend/postgres/migration.sql", import.meta.url),
         "utf8",
       ),
     );

@@ -12,7 +12,7 @@ dependencies:
   # run_ios_simulator_smoke.sh overrides this with a staged package whose
   # build hook bundles the simulator library from build/axton-libraries.
   axton:
-    path: ../../../packages/dart
+    path: ../../../packages/frontend/dart
 
 dev_dependencies:
   flutter_test:

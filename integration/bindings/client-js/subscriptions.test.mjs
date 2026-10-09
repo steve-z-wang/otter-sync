@@ -2,8 +2,8 @@
 // Real native single-Stream behavior also runs in scope-protocol/bootstrap suites.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Subscriptions } from "../../../packages/client-js/subscriptions.mts";
-import { Bridge } from "../../../packages/client-js/bridge.mts";
+import { Subscriptions } from "../../../packages/frontend/client-js/api/subscriptions.mts";
+import { Bridge } from "../../../packages/frontend/client-js/bindings/bridge.mts";
 const notRequested = { phase: "not-requested", error: null };
 /**
  * The handles driven through a Bridge over a scripted runtime, so what the

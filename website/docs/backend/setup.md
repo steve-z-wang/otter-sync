@@ -23,7 +23,7 @@ const server = await backend.listen({ port: 4242 });
 console.log(server.url);
 ```
 
-The generated `createBackend` needs no `config` option: the schema is already bound. The runtime's own `createBackend` (`packages/server/index.mts`) still takes `config` explicitly, for callers that build the schema themselves.
+The generated `createBackend` needs no `config` option: the schema is already bound. The runtime's own `createBackend` (`packages/backend/server/index.mts`) still takes `config` explicitly, for callers that build the schema themselves.
 
 `mutations`, `queries` and `loaders` are application modules typed against the generated interfaces; a schema without Queries omits `queries`, one without Mutations omits `mutations`. The application enforces write and read permissions. Stream authorization, business permissions, unique constraints and child deletion are the application's responsibility ([What your backend owns](api.md#what-your-backend-owns)).
 

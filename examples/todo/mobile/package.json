@@ -10,8 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@axton/client-react-native": "file:../../../packages/client-react-native",
-    "@axton/native": "file:../../../packages/client-react-native/native-module",
+    "@axton/client-react-native": "file:../../../packages/frontend/client-react-native",
+    "@axton/native": "file:../../../packages/frontend/client-react-native/native-module",
     "expo": "~57.0.22",
     "expo-crypto": "~15.0.9",
     "expo-file-system": "~57.0.7",

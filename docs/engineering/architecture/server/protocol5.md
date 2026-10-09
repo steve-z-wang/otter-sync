@@ -15,8 +15,8 @@ The SDK carries one validated immutable request through sequential `processBatch
 - [protocol_v05.rs](../../../../crates/server/src/protocol_v05.rs) validates carriers, assembles acknowledgements and adapts existing settlement/Loader machinery.
 - [mutation_batch.rs](../../../../crates/server/src/mutation_batch.rs) owns Store admission, replay, per-member execution and outcome persistence.
 - [delivery_plan.rs](../../../../crates/server/src/delivery_plan.rs) freezes Bootstrap, repair and owned materialization and carries Query/Fetch snapshots.
-- [host.rs](../../../../crates/server/src/host.rs) defines strict `Protocol05Operation` requests, mirrored in [host-contract.mts](../../../../packages/server/host-contract.mts).
-- [persistence.mts](../../../../packages/postgres/src/persistence.mts) dispatches those operations through the shared pg/Prisma/Drizzle driver; [migration.sql](../../../../packages/postgres/migration.sql) installs eight tables in a fresh framework namespace and refuses an existing legacy namespace unchanged.
+- [host.rs](../../../../crates/protocols/src/server_bridge/mod.rs) defines strict `Protocol05Operation` requests, mirrored in [host-contract.mts](../../../../packages/backend/server/bindings/host-contract.mts).
+- [persistence.mts](../../../../packages/backend/postgres/src/persistence.mts) dispatches those operations through the shared pg/Prisma/Drizzle driver; [migration.sql](../../../../packages/backend/postgres/migration.sql) installs eight tables in a fresh framework namespace and refuses an existing legacy namespace unchanged.
 
 ## 6. Runtime View
 

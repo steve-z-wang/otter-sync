@@ -31,7 +31,7 @@ cd "$repo_root"
 # and hashed as a release names them, from the app's local_artifacts directory.
 cp -R "$script_dir/ios_smoke" "$app_dir"
 rm -rf "$app_dir/build" "$app_dir/.dart_tool"
-version="$(sed -n 's/^version: \([^ ]*\).*/\1/p' "$repo_root/packages/dart/pubspec.yaml")"
+version="$(sed -n 's/^version: \([^ ]*\).*/\1/p' "$repo_root/packages/frontend/dart/pubspec.yaml")"
 mkdir -p "$app_dir/build/axton-libraries" "$work/axton"
 node -e '
   const table = require(process.argv[1]);
@@ -43,8 +43,8 @@ for target in $(node -p 'require(process.argv[1]).mobile.map((t) => `${t.name}:$
   IPHONEOS_DEPLOYMENT_TARGET=13.0 cargo build --locked -p axton-dart --target "$triple"
   cp "$repo_root/target/$triple/debug/libaxton_dart.dylib" "$app_dir/build/axton-libraries/libaxton_dart-$version-$name.dylib"
 done
-git ls-files packages/dart | tar -cf - -T - | tar -xf - -C "$work/axton" --strip-components=2
-(cd "$repo_root/packages/dart" && dart run tool/write_native_manifest.dart \
+git ls-files packages/frontend/dart | tar -cf - -T - | tar -xf - -C "$work/axton" --strip-components=3
+(cd "$repo_root/packages/frontend/dart" && dart run tool/write_native_manifest.dart \
   --artifacts "$app_dir/build/axton-libraries" --package "$work/axton" --targets "$work/targets.json")
 printf 'dependency_overrides:\n  axton:\n    path: %s\n' "$work/axton" >"$app_dir/pubspec_overrides.yaml"
 

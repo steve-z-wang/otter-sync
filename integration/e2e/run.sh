@@ -10,7 +10,7 @@ esac
 export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
 export AXTON_DART="${AXTON_DART:-$(command -v dart)}"
 bash "$root/scripts/build.sh"
-(cd "$root/packages/dart" && dart pub get)
+(cd "$root/packages/frontend/dart" && dart pub get)
 (cd "$root/integration/action-runtime-dart" && dart pub get)
 (cd "$root/integration/e2e/fixtures/round-trip" && npm ci && PRISMA_GENERATE_SKIP_AUTOINSTALL=true npm run generate)
 cluster="$(mktemp -d "${TMPDIR:-/tmp}/axton-e2e-pg.XXXXXX")"
@@ -24,7 +24,7 @@ node --test "$root/integration/e2e/round-trip.test.mjs"
 node --test "$root/integration/e2e/subscriptions.test.mjs"
 node --test "$root/integration/e2e/bootstrap.test.mjs"
 node --test "$root/integration/e2e/parity.test.mjs"
-cargo run -p axton-compiler --locked -- compile "$root/integration/e2e/behavior/schema" "$root/integration/e2e/behavior" --backend-runtime ../../../packages/server/index.mts --client-runtime ../../../packages/client-js/index.mts
+cargo run -p axton-compiler --locked -- compile "$root/integration/e2e/behavior/schema" "$root/integration/e2e/behavior" --backend-runtime ../../../packages/backend/server/index.mts --client-runtime ../../../packages/frontend/client-js/index.mts
 "$root/node_modules/.bin/tsc" -p "$root/integration/e2e/behavior"
 node --test --test-timeout=120000 "$root/integration/e2e/behavior/acceptance.test.mjs"
 node --experimental-strip-types --test "$root/integration/e2e/dart-codecs.test.mts"

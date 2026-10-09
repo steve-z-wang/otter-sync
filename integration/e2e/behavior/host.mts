@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { Pool } from "pg";
-import { pg, type PgClient } from "../../../packages/postgres/index.mts";
-import { isRetryableTransactionError } from "../../../packages/server/index.mts";
+import { pg, type PgClient } from "../../../packages/backend/postgres/index.mts";
+import { isRetryableTransactionError } from "../../../packages/backend/server/index.mts";
 import { createBackend, devAuth } from "./backend.ts";
 import { createProxy } from "../proxy.mts";
 import { drainedDatabase } from "../lifecycle.mts";
@@ -18,7 +18,7 @@ export async function host({ projected = false } = {}) {
   });
   await pool.query(
     await readFile(
-      new URL("../../../packages/postgres/migration.sql", import.meta.url),
+      new URL("../../../packages/backend/postgres/migration.sql", import.meta.url),
       "utf8",
     ),
   );

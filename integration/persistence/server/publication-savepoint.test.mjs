@@ -5,8 +5,8 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Pool } from "pg";
 import { drizzle as orm } from "drizzle-orm/node-postgres";
-import { pg, prisma } from "../../../packages/postgres/index.mts";
-import { drizzle } from "../../../packages/postgres/src/drizzle.mts";
+import { pg, prisma } from "../../../packages/backend/postgres/index.mts";
+import { drizzle } from "../../../packages/backend/postgres/src/drizzle.mts";
 import { createBackend } from "../../v05-sdk/backend.ts";
 const require = createRequire(import.meta.url),
   native = require("../../../bindings/node/axton-node.node");
@@ -39,7 +39,7 @@ for (const [name, database] of adapters)
           await admin.query(
             await readFile(
               new URL(
-                "../../../packages/postgres/migration.sql",
+                "../../../packages/backend/postgres/migration.sql",
                 import.meta.url,
               ),
               "utf8",
@@ -201,7 +201,7 @@ for (const [name, first] of adapters)
           await admin.query(
             await readFile(
               new URL(
-                "../../../packages/postgres/migration.sql",
+                "../../../packages/backend/postgres/migration.sql",
                 import.meta.url,
               ),
               "utf8",

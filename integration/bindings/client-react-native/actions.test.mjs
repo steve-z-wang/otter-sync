@@ -7,9 +7,9 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createClient } from "../../../packages/client-js/runtime.mts";
-import { Transaction } from "../../../packages/client-react-native/transaction.mts";
-import { createServerConnection } from "../../../packages/client-react-native/live.mts";
+import { createClient } from "../../../packages/frontend/client-js/api/runtime.mts";
+import { Transaction } from "../../../packages/frontend/client-react-native/api/transaction.mts";
+import { createServerConnection } from "../../../packages/frontend/client-react-native/bindings/live.mts";
 import {
   openStore,
   offlineNetwork,

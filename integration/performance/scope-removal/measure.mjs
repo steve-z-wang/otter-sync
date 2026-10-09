@@ -7,9 +7,9 @@ import {createHash} from 'node:crypto';
 import os from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {Pool} from 'pg';
-import {createBackend} from '../../../packages/server/index.mts';
-import {pg} from '../../../packages/postgres/index.mts';
-import * as SQL from '../../../packages/postgres/src/sql.mts';
+import {createBackend} from '../../../packages/backend/server/index.mts';
+import {pg} from '../../../packages/backend/postgres/index.mts';
+import * as SQL from '../../../packages/backend/postgres/src/sql.mts';
 const native=createRequire(import.meta.url)('../../../bindings/node/axton-node.node');
 assert.ok(process.env.DATABASE_URL,'runner must provide its disposable DATABASE_URL');
 assert.equal(new URL(process.env.DATABASE_URL).hostname,'127.0.0.1','local disposable PostgreSQL only');
@@ -36,7 +36,7 @@ const snapshots=async()=>{
   counts[table]=Number((await query(`SELECT count(*) AS n FROM ${table}`))[0].n);
  }return counts;};
 try {
- await pool.query(await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8'));
+ await pool.query(await readFile(new URL('../../../packages/backend/postgres/migration.sql',import.meta.url),'utf8'));
  await pool.query('CREATE TABLE measurement_todo(id text PRIMARY KEY,title text NOT NULL)');
  const metadata={time:new Date().toISOString(),head:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
   nativeAddon:{sha256:createHash('sha256').update(await readFile(new URL('../../../bindings/node/axton-node.node',import.meta.url))).digest('hex'),mtime:(await stat(new URL('../../../bindings/node/axton-node.node',import.meta.url))).mtime.toISOString()},

@@ -361,14 +361,32 @@ async function answer05(
             throw new Error("guards must be canonically ordered");
         }
       }
-      const result = [];
-      for (const record of records) {
+      const result: boolean[] = [];
+      // Never reorder mixed modes: an earlier lock must precede a later ensure.
+      for (let at = 0; at < records.length;) {
+        const mode = records[at]!.mode;
+        let end = at + 1;
+        while (
+          end < records.length &&
+          end - at < SQL.STREAM_BATCH &&
+          records[end]!.mode === mode
+        )
+          end++;
+        const group = records.slice(at, end);
         const rows = await q(
-          record.mode === "lock" ? SQL.LOCK_IDENTITY : SQL.ENSURE_IDENTITY,
-          record.model,
-          record.identityKey,
+          mode === "lock" ? SQL.LOCK_IDENTITIES : SQL.ENSURE_IDENTITIES,
+          JSON.stringify(group),
         );
-        result.push(rows.length === 1);
+        const represented = new Set(
+          rows.map((row) =>
+            pairId({
+              model: String(row.model),
+              identityKey: String(row.identity_key),
+            }),
+          ),
+        );
+        result.push(...group.map((record) => represented.has(pairId(record))));
+        at = end;
       }
       return result;
     }
@@ -378,25 +396,30 @@ async function answer05(
         keyOf(value),
       );
       const positions = [];
-      for (const record of records) {
-        const [row] = await q(
-          SQL.V05_POSITIONS_READ,
+      for (const group of batches(records)) {
+        const rows = await q(
+          SQL.V05_POSITIONS_READ_BATCH,
           r.stream,
-          record.model,
-          record.identityKey,
+          JSON.stringify(group),
         );
-        if (!row) {
-          if (r.op === "readPositions")
-            throw new Error("missing Stream position");
-          positions.push(null);
-        } else
-          positions.push({
-            stream: r.stream,
-            model: record.model,
-            identityKey: record.identityKey,
-            cursor: positiveCounter(row.cursor),
-            kind: row.kind,
-          });
+        if (rows.length !== group.length)
+          throw new Error("position cardinality mismatch");
+        for (let i = 0; i < group.length; i++) {
+          const record = group[i]!;
+          const row = rows[i]!;
+          if (row.cursor === null) {
+            if (r.op === "readPositions")
+              throw new Error("missing Stream position");
+            positions.push(null);
+          } else
+            positions.push({
+              stream: r.stream,
+              model: record.model,
+              identityKey: record.identityKey,
+              cursor: positiveCounter(row.cursor),
+              kind: row.kind,
+            });
+        }
       }
       return positions;
     }
@@ -424,28 +447,34 @@ async function answer05(
         cursors.set(stream, positiveCounter(row.cursor));
       }
       const positions = [];
-      for (const d of deltas) {
-        const stream = streamName(d.stream);
-        const [record] = await q(SQL.V05_RECORD_ID, d.model, d.identityKey);
-        if (!record) throw new Error("missing canonical record metadata");
-        const rows = d.publish
-          ? await q(
-              SQL.V05_POSITION_WRITE,
-              stream,
-              record.id,
-              cursors.get(stream),
-            )
-          : await q(SQL.V05_POSITION_READ, stream, record.id);
-        const row = rows[0];
-        if (!row || row.kind !== "upsert")
-          throw new Error("unpublished pair has no live position");
-        positions.push({
-          stream,
-          model: d.model,
-          identityKey: d.identityKey,
-          cursor: positiveCounter(row.cursor),
-          kind: "upsert",
-        });
+      for (const group of batches(deltas)) {
+        const rows = await q(
+          SQL.V05_APPLY_MEMBERS_BATCH,
+          JSON.stringify(
+            group.map((d) => ({
+              ...d,
+              stream: streamName(d.stream),
+              cursor: cursors.get(String(d.stream)),
+            })),
+          ),
+        );
+        if (rows.length !== group.length)
+          throw new Error("member cardinality mismatch");
+        for (let i = 0; i < group.length; i++) {
+          const d = group[i]!;
+          const row = rows[i]!;
+          if (!row.represented)
+            throw new Error("missing canonical record metadata");
+          if (row.kind !== "upsert")
+            throw new Error("unpublished pair has no live position");
+          positions.push({
+            stream: d.stream,
+            model: d.model,
+            identityKey: d.identityKey,
+            cursor: positiveCounter(row.cursor),
+            kind: "upsert",
+          });
+        }
       }
       return positions;
     }

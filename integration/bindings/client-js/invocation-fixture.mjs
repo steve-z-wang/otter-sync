@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createClient } from "../../../packages/client-js/runtime.mts";
+import { createClient } from "../../../packages/frontend/client-js/api/runtime.mts";
 
 export function invocationTests(Transaction) {
   function fixture(connected = false) {

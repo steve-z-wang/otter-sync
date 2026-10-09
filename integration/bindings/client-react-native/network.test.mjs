@@ -7,10 +7,10 @@ import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import WebSocket, { WebSocketServer } from "ws";
-import { createClient } from "../../../packages/client-js/runtime.mts";
-import { Transaction } from "../../../packages/client-react-native/transaction.mts";
+import { createClient } from "../../../packages/frontend/client-js/api/runtime.mts";
+import { Transaction } from "../../../packages/frontend/client-react-native/api/transaction.mts";
 import { delivery05, emptyHandshake } from "../client-js/store-fixture.mjs";
-import { createServerConnection } from "../../../packages/client-react-native/live.mts";
+import { createServerConnection } from "../../../packages/frontend/client-react-native/bindings/live.mts";
 // Node adapts RN's socket API here; actual device loading is a separate gate.
 class NativeSocket extends WebSocket {
   constructor(url, protocols, options) {

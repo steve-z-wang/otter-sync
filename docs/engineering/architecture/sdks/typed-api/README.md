@@ -11,5 +11,5 @@ The compiler emits both halves from the same `.model` files ([Compiler / Generat
 
 | Part | Code location |
 |---|---|
-| Client | [client-js](../../../../../packages/client-js), [dart](../../../../../packages/dart/lib); model-specific classes are compiler output |
-| Server | [server/index.mts](../../../../../packages/server/index.mts); typed signatures are compiler output |
+| Client | [client-js](../../../../../packages/frontend/client-js), [dart](../../../../../packages/frontend/dart/lib); model-specific classes are compiler output |
+| Server | [server/index.mts](../../../../../packages/backend/server/index.mts); typed signatures are compiler output |

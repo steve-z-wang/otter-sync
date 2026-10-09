@@ -4,7 +4,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 source "$root/scripts/env.sh"
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/axton-scope-reopen.XXXXXX")"
 trap 'rm -rf -- "$fixture"' EXIT
-cargo run --manifest-path "$root/Cargo.toml" -p axton-compiler --locked -- compile "$root/integration/persistence/client" "$fixture" --client-runtime "$root/packages/client-js/index.mts" --backend-runtime "$root/packages/server/index.mts" --mutation-history "$fixture/mutations.json" --model-history "$fixture/models.json" --action-history "$fixture/actions.json" --initialize-mutation-history --initialize-model-history --initialize-action-history
+cargo run --manifest-path "$root/Cargo.toml" -p axton-compiler --locked -- compile "$root/integration/persistence/client" "$fixture" --client-runtime "$root/packages/frontend/client-js/index.mts" --backend-runtime "$root/packages/backend/server/index.mts" --mutation-history "$fixture/mutations.json" --model-history "$fixture/models.json" --action-history "$fixture/actions.json" --initialize-mutation-history --initialize-model-history --initialize-action-history
 # Refuse the original layout unchanged; a fresh file is independent.
 cargo test --manifest-path "$root/Cargo.toml" -p axton-sqlite --test stream_upgrade original_v02_layout_is_refused_unchanged_and_fresh_file_is_independent
 snapshot() {

@@ -6,7 +6,7 @@ import {
   retryDelay,
   RETRY_BACKOFF_BASE_MS,
   RETRY_BACKOFF_CAP_MS,
-} from "../../../packages/postgres/index.mts";
+} from "../../../packages/backend/postgres/index.mts";
 test("pg: a connection whose ROLLBACK fails is released as broken, a healthy one is released for reuse", async () => {
   const releases = [];
   const fakePool = (failRollback) => ({
@@ -159,8 +159,8 @@ test("the pg driver retries only serialization failures, a bounded number of tim
   );
 });
 
-import { prisma, prismaDriver } from "../../../packages/postgres/index.mts";
-import { isRetryableTransactionError } from "../../../packages/server/retryable.mts";
+import { prisma, prismaDriver } from "../../../packages/backend/postgres/index.mts";
+import { isRetryableTransactionError } from "../../../packages/backend/server/bindings/retryable.mts";
 test("the Prisma driver retries only serialization failures, a bounded number of times, and reports the last one", async () => {
   const attempts = [];
   const bodies = [];

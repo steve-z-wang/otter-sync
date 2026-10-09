@@ -2,7 +2,7 @@ import { openStore } from "./store-fixture.mjs";
 // Worker body for `worker.test.mjs`: opens a client on `workerData.path`,
 // writes inside a transaction whose callback never finishes, and says so.
 import { parentPort, workerData } from "node:worker_threads";
-import { Client } from "../../../packages/client-js/index.mts";
+import { Client } from "../../../packages/frontend/client-js/index.mts";
 
 const paths = workerData.paths ?? [workerData.path];
 let holding = 0;

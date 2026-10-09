@@ -6,7 +6,7 @@ Handlers receive authenticated context, typed arguments and the retained transac
 
 ## 5. Building Block View
 
-[Implementation](../../../../crates/server/src/host.rs) owns this component. [Protocol 5](../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[Implementation](../../../../crates/protocols/src/server_bridge/mod.rs) owns this component. [Protocol 5](../protocol/0.5.md) owns shared context, delivery and settlement rules.
 
 ## 10. Quality Requirements
 

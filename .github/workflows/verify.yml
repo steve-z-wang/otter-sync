@@ -53,4 +53,4 @@ jobs:
           cargo build --workspace --release --locked
           node bindings/node/build.mjs --release
           node_modules/.bin/napi build --release --platform --cwd packages/native --manifest-path ../../bindings/node/Cargo.toml --output-dir . --js index.js --dts index.d.ts -- --locked
-          node --test integration/bindings/client-js/*.test.mjs packages/client-js/*.test.mjs
+          node --test integration/bindings/client-js/*.test.mjs packages/frontend/client-js/*.test.mjs

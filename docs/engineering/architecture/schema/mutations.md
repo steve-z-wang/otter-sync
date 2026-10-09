@@ -17,7 +17,7 @@ The compiler retains input Models/enums and versioned policy snapshots. Sequence
 - [parse.rs](../../../../crates/compiler/src/parse.rs) and [validate.rs](../../../../crates/compiler/src/validate.rs) own source syntax, input restrictions, binding and sequence checks.
 - [history.rs](../../../../crates/compiler/src/history.rs) retains published operation contracts and checks compatible changes.
 - [policies.rs](../../../../crates/client/src/policies.rs) derives local lifecycle and sequence dependencies.
-- [protocol_v05.rs](../../../../crates/core/src/protocol_v05.rs) owns frozen named intent with explicit `inputPath`, operation/value entries and the immutable Batch digest.
+- [protocol_v05.rs](../../../../crates/protocols/src/sync.rs) owns frozen named intent with explicit `inputPath`, operation/value entries and the immutable Batch digest.
 - [server protocol_v05.rs](../../../../crates/server/src/protocol_v05.rs) selects the trusted name/version, reconstructs input and normalizes it against the retained schema before execution.
 
 The caller's descriptor fingerprint belongs to immutable intent; it does not replace the backend's retained contract. Compatible widening or field reordering need not reject a frozen Call. Business handlers and viewer Loaders remain the permission authority.

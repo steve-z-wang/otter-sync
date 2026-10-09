@@ -6,8 +6,8 @@ import { createRequire } from "node:module";
 import {
   createBackend,
   MutationRejected,
-} from "../../../packages/server/index.mts";
-import { HOST_OPERATIONS } from "../../../packages/server/host-contract.mts";
+} from "../../../packages/backend/server/index.mts";
+import { HOST_OPERATIONS } from "../../../packages/backend/server/bindings/host-contract.mts";
 const native = createRequire(import.meta.url)(
   "../../../bindings/node/axton-node.node",
 );

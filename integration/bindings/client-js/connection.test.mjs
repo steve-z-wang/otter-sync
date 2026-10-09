@@ -11,9 +11,9 @@ import {
   PrerequisiteRetry,
   prerequisites,
   startConnection,
-} from "../../../packages/client-js/connection.mts";
-import { createClient } from "../../../packages/client-js/runtime.mts";
-import { Transaction } from "../../../packages/client-js/transaction.mts";
+} from "../../../packages/frontend/client-js/bindings/connection.mts";
+import { createClient } from "../../../packages/frontend/client-js/api/runtime.mts";
+import { Transaction } from "../../../packages/frontend/client-js/api/transaction.mts";
 
 // The connection is an effect executor (#134): the Rust runtime owns the
 // lanes, direct calls, refresh, timeouts and retries, and asks the SDK for
@@ -831,7 +831,7 @@ test("closed connection controls cannot affect a replacement connection", async 
 });
 
 test("closing an old client connection twice preserves ownership of the replacement", async () => {
-  const { Client } = await import("../../../packages/client-js/index.mts");
+  const { Client } = await import("../../../packages/frontend/client-js/index.mts");
   const directory = await mkdtemp(join(tmpdir(), "axton-connection-"));
   const client = await openStore(Client,{
     path: join(directory, "client.sqlite"),
@@ -855,7 +855,7 @@ test("closing an old client connection twice preserves ownership of the replacem
 });
 
 test("client close waits for in-flight connection setup and remains idempotent", async () => {
-  const { Client } = await import("../../../packages/client-js/index.mts");
+  const { Client } = await import("../../../packages/frontend/client-js/index.mts");
   const directory = await mkdtemp(join(tmpdir(), "axton-connection-close-"));
   const client = await openStore(Client,{
     path: join(directory, "client.sqlite"),

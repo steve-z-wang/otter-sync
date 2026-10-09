@@ -18,11 +18,11 @@ import {
   type TodoPagesInput,
 } from "./backend.ts";
 import type { PutOutput, Todo } from "./generated.ts";
-import type { Database } from "../../packages/server/index.mts";
+import type { Database } from "../../packages/backend/server/index.mts";
 import type {
   Call as SdkCall,
   CallOutcome as SdkCallOutcome,
-} from "../../packages/client-js/index.mts";
+} from "../../packages/frontend/client-js/index.mts";
 
 declare const client: GeneratedClient;
 declare const todo: Todo;

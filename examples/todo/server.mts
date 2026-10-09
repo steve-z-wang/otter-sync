@@ -2,8 +2,8 @@ import { PrismaClient, Prisma } from "./prisma/client/index.js";
 import type { IncomingMessage } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { prisma } from "../../packages/postgres/index.mts";
-import { sqlStatements } from "../../packages/postgres/src/statements.mts";
+import { prisma } from "../../packages/backend/postgres/index.mts";
+import { sqlStatements } from "../../packages/backend/postgres/src/statements.mts";
 import {
   createBackend,
   CallRejected,
@@ -173,7 +173,7 @@ export async function createExample() {
     },
     async initialize() {
       const migration = await readFile(
-        new URL("../../packages/postgres/migration.sql", import.meta.url),
+        new URL("../../packages/backend/postgres/migration.sql", import.meta.url),
         "utf8",
       );
       // Prisma runs one statement per call.

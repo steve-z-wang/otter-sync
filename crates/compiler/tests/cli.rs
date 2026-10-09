@@ -414,19 +414,19 @@ fn cli_writes_backend_ts_with_the_requested_runtime_import() {
         .arg(&input)
         .arg(&out)
         .arg("--backend-runtime")
-        .arg("../../packages/server/index.mts")
+        .arg("../../packages/backend/server/index.mts")
         .arg("--client-runtime")
-        .arg("../../packages/client-js/index.mts")
+        .arg("../../packages/frontend/client-js/index.mts")
         .status()
         .unwrap();
     assert!(status.success());
     let backend = fs::read_to_string(out.join("backend.ts")).unwrap();
-    assert!(backend.contains("from \"../../packages/server/index.mts\""));
+    assert!(backend.contains("from \"../../packages/backend/server/index.mts\""));
     assert!(!backend.contains("HandlerCall<Tx, SaveInput>"));
     assert!(!backend.contains("options.handlers"));
     assert!(backend.contains(" a?: { v1(call: LoaderCall<Tx, AIdentity>)"));
     let client = fs::read_to_string(out.join("client.ts")).unwrap();
-    assert!(client.contains("from \"../../packages/client-js/index.mts\""));
+    assert!(client.contains("from \"../../packages/frontend/client-js/index.mts\""));
     assert!(client.contains(" static async open(options: {path:string;"));
     assert!(!client.contains("owner"));
     fs::remove_dir_all(root).unwrap();

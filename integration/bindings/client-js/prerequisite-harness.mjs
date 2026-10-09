@@ -8,8 +8,8 @@ import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createClient } from "../../../packages/client-js/runtime.mts";
-import { PrerequisiteRetry } from "../../../packages/client-js/connection.mts";
+import { createClient } from "../../../packages/frontend/client-js/api/runtime.mts";
+import { PrerequisiteRetry } from "../../../packages/frontend/client-js/bindings/connection.mts";
 
 const native = createRequire(import.meta.url)(
   "../../../bindings/node/axton-node.node",

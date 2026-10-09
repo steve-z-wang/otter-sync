@@ -14,7 +14,7 @@ bash scripts/build.sh
 (cd integration/e2e/fixtures/round-trip && npm ci && npm run generate)
 bash integration/platform/react-native/generate.sh
 rustup target add aarch64-apple-ios-sim
-bash packages/client-react-native/native-module/scripts/build-ios.sh simulator
+bash packages/frontend/client-react-native/native-module/scripts/build-ios.sh simulator
 (cd integration/platform/react-native && npm ci)
 ```
 
@@ -31,7 +31,7 @@ npx expo prebuild --platform ios --no-install
 npm run ios:build
 ```
 
-`ios:build` compiles the Release simulator app without installing it on any simulator; the product is `ios/build/Build/Products/Release-iphonesimulator/axtonrnharness.app`, which the runner uses by default. `npm run ios:release` additionally installs and launches the app on the selected simulator. Set `AXTON_RN_APP_BUNDLE` when the app is built elsewhere. `expo prebuild` regenerates the whole `ios` directory, so run `pod install` again after it. The `packages/client-react-native/plugins/expo-path-spaces` config plugin quotes the two Expo-generated script phases (Expo Constants and the React Native bundle phase) that otherwise fail when the repository path contains spaces; the build is arm64-only because the vendored Rust library carries that simulator slice. Native projects and compiled libraries are generated artifacts and are not committed. The native module is a local package and must be built before CocoaPods resolves its vendored library.
+`ios:build` compiles the Release simulator app without installing it on any simulator; the product is `ios/build/Build/Products/Release-iphonesimulator/axtonrnharness.app`, which the runner uses by default. `npm run ios:release` additionally installs and launches the app on the selected simulator. Set `AXTON_RN_APP_BUNDLE` when the app is built elsewhere. `expo prebuild` regenerates the whole `ios` directory, so run `pod install` again after it. The `packages/frontend/client-react-native/plugins/expo-path-spaces` config plugin quotes the two Expo-generated script phases (Expo Constants and the React Native bundle phase) that otherwise fail when the repository path contains spaces; the build is arm64-only because the vendored Rust library carries that simulator slice. Native projects and compiled libraries are generated artifacts and are not committed. The native module is a local package and must be built before CocoaPods resolves its vendored library.
 
 ## Run
 
@@ -64,7 +64,7 @@ Verified 2026-09-15 on branch `codex/react-native` at commit `c54ff70` (rerun af
 Commands, from the repository root after the setup above:
 
 ```sh
-node --test packages/client-react-native/plugins/expo-path-spaces.test.cjs
+node --test packages/frontend/client-react-native/plugins/expo-path-spaces.test.cjs
 (cd integration/platform/react-native && ./node_modules/.bin/tsc --noEmit)
 (cd integration/platform/react-native && npx expo prebuild --platform ios --no-install && (cd ios && pod install) && npm run ios:build)
 bash integration/platform/run_react_native_ios_smoke.sh

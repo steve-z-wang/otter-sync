@@ -7,7 +7,7 @@ import { join } from "node:path";
 import {
   type Call,
   type QueryOptions,
-} from "../../packages/client-js/index.mts";
+} from "../../packages/frontend/client-js/index.mts";
 import { GeneratedClient } from "./client.ts";
 import { makeMutations, makeQueries, type Todo } from "./generated.ts";
 

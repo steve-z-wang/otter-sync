@@ -57,19 +57,19 @@ test("the copied version files agree before any edit", (t) => {
 test("a manifest at another version is reported", (t) => {
   // Versions no real release reaches, so a release bump never collides.
   const root = copyVersionFiles(t);
-  editJson(root, "packages/server/package.json", (manifest) => {
+  editJson(root, "packages/backend/server/package.json", (manifest) => {
     manifest.version = "90.0.0";
   });
   editText(root, "Cargo.toml", (text) =>
     text.replace(/(\[workspace\.package\]\nversion = )"[^"]+"/, '$1"91.0.0"'),
   );
-  editText(root, "packages/dart/pubspec.yaml", (text) =>
+  editText(root, "packages/frontend/dart/pubspec.yaml", (text) =>
     text.replace(/version: \S+ # x-release-please-version/, "version: 92.0.0 # x-release-please-version"),
   );
   const problems = check(root);
-  assert.ok(problems.some((p) => p.startsWith("packages/server/package.json $.version: 90.0.0")), problems.join("\n"));
+  assert.ok(problems.some((p) => p.startsWith("packages/backend/server/package.json $.version: 90.0.0")), problems.join("\n"));
   assert.ok(problems.some((p) => p.startsWith("Cargo.toml $.workspace.package.version: 91.0.0")), problems.join("\n"));
-  assert.ok(problems.some((p) => p.startsWith("packages/dart/pubspec.yaml: 92.0.0")), problems.join("\n"));
+  assert.ok(problems.some((p) => p.startsWith("packages/frontend/dart/pubspec.yaml: 92.0.0")), problems.join("\n"));
 });
 
 test("an internal dependency must pin the release version exactly", (t) => {
@@ -89,13 +89,13 @@ test("an internal dependency must pin the release version exactly", (t) => {
     assert.ok(problems.some((p) => p.includes(`${name} is ^${version}, expected exactly ${version}`)), problems.join("\n"));
   }
   // A new internal pin that release-please would not keep current.
-  editJson(root, "packages/postgres/package.json", (manifest) => {
+  editJson(root, "packages/backend/postgres/package.json", (manifest) => {
     manifest.dependencies = { ...manifest.dependencies, "@axtonjs/unlisted": version };
   });
   const problems = check(root);
   assert.ok(
     problems.includes(
-      "packages/postgres/package.json: dependencies @axtonjs/unlisted is not updated by release-please-config.json",
+      "packages/backend/postgres/package.json: dependencies @axtonjs/unlisted is not updated by release-please-config.json",
     ),
     problems.join("\n"),
   );
@@ -145,7 +145,7 @@ test("a Cargo or Dart lockfile at another version is reported", (t) => {
 });
 
 test("JSONPath outside the supported subset is refused", () => {
-  assert.deepEqual(jsonPathSegments("$.packages['packages/server'].version"), ["packages", "packages/server", "version"]);
+  assert.deepEqual(jsonPathSegments("$.packages['packages/backend/server'].version"), ["packages", "packages/backend/server", "version"]);
   assert.deepEqual(jsonPathSegments("$.packages[''].version"), ["packages", "", "version"]);
   assert.throws(() => jsonPathSegments("$.package[?(@.name=='axton-core')].version"), /unsupported JSONPath/);
   assert.throws(() => jsonPathSegments("$..version"), /unsupported JSONPath/);

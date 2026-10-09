@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createServerConnection} from '../../../packages/client-react-native/live.mts';
+import {createServerConnection} from '../../../packages/frontend/client-react-native/bindings/live.mts';
 const tick=()=>new Promise(r=>setImmediate(r));
 const subscribe=JSON.stringify({type:'subscribe',streams:['scope'],models:{Entry:1},capabilities:['stream-authority-v1']});
 const handlers=(over={})=>({message:async()=>{},overflow:async()=>{},closed:()=>{},...over});

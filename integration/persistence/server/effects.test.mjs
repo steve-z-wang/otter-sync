@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {createEffects,createLoadEffects,bootstrapEffectsFor,enrollmentBytes,LOAD_ENROLLMENT_PAIRS,LOAD_ENROLLMENT_BYTES} from '../../../packages/server/effects.mts';
+import {createEffects,createLoadEffects,bootstrapEffectsFor,enrollmentBytes,LOAD_ENROLLMENT_PAIRS,LOAD_ENROLLMENT_BYTES} from '../../../packages/backend/server/bindings/effects.mts';
 const {schema}=JSON.parse(await readFile(new URL('../../action-runtime-ts/backend.json',import.meta.url),'utf8'));
 const models=schema.models;
 const fresh=()=>createEffects(models);

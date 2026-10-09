@@ -50,7 +50,7 @@ Build the Rust simulator slice and the app once:
 
 ```sh
 rustup target add aarch64-apple-ios-sim
-bash packages/client-react-native/native-module/scripts/build-ios.sh simulator
+bash packages/frontend/client-react-native/native-module/scripts/build-ios.sh simulator
 cd examples/todo/mobile
 npm ci
 npx expo prebuild --platform ios --no-install
@@ -74,7 +74,7 @@ Each installation keeps its own database file and client identity under Applicat
 
 ## Walkthrough
 
-1. **Two tables.** `models/todo.model` declares `User(id, name)` and `Todo(id, title, done, createdById)` with `createdBy` as a reference. The backend adds no other application tables; AXTON's own sync tables come from `packages/postgres/migration.sql`.
+1. **Two tables.** `models/todo.model` declares `User(id, name)` and `Todo(id, title, done, createdById)` with `createdBy` as a reference. The backend adds no other application tables; AXTON's own sync tables come from `packages/backend/postgres/migration.sql`.
 2. **Two Mutations.** `AddTodo` creates a task and declares no result; `SetTodoDone` updates only `done` and declares an explicit `{ todo Todo }` output. The generated client exposes `client.mutations.addTodo` and `client.mutations.setTodoDone` for durable local commits. Each returns a `Call` whose `wait()` resolves once the backend's authority for the input is applied locally, with the declared result (none for `AddTodo`) or a rejection. Both use the same durable named Mutation path. The generated backend requires one typed `mutations` handler per retained version.
 3. **Backend rules.** `server.mts` trims the title and refuses empty ones, requires the creator to be the authenticated user and `done` to start false, and turns only a proven primary-key collision into `todo.id_conflict`. Handlers throw `CallRejected` for these business refusals. The Mutation input is already the changed record: AXTON stamps it and returns its authority to the caller. `addTodo` adds the new task to Stream `todo:demo` once (`ctx.streams([SCOPE]).track.todo(...)`), so that change and every later one reach the Stream's subscribers; `setTodoDone` needs no enrollment and returns `{ todo: { id } }`, which AXTON reads through the Loader for its result. `seed.mts` invalidates and tracks the demo rows in one `backend.transaction`.
 4. **Local watch.** `mobile/src/todo.ts` opens the generated client on a per-user database, binds the single Stream `todo:demo` at open, and exposes `watch`, `add` and `setDone`. Bootstrap materializes the marked User and Todo baseline before its saved tail is covered by normal delivery. `add` and `setDone` return after the local commit; the screen renders from watch callbacks only, never from a second in-memory store.

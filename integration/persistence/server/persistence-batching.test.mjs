@@ -4,12 +4,12 @@ import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { Pool } from "pg";
-import { answer } from "../../../packages/postgres/src/persistence.mts";
-import { pgDriver } from "../../../packages/postgres/src/pg.mts";
+import { answer } from "../../../packages/backend/postgres/src/persistence.mts";
+import { pgDriver } from "../../../packages/backend/postgres/src/pg.mts";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const base = pgDriver(pool);
 const ddl = await readFile(
-  new URL("../../../packages/postgres/migration.sql", import.meta.url),
+  new URL("../../../packages/backend/postgres/migration.sql", import.meta.url),
   "utf8",
 );
 after(() => pool.end());
@@ -372,7 +372,7 @@ test("[prisma] 2055 identities settle in the default interactive transaction", (
   fixture(async ({ tx, schema }) => {
     const { createRequire } = await import("node:module");
     const { prismaDriver } =
-      await import("../../../packages/postgres/src/prisma.mts");
+      await import("../../../packages/backend/postgres/src/prisma.mts");
     const { PrismaClient } = createRequire(import.meta.url)(
       process.env.AXTON_PRISMA_CLIENT ?? "../../bindings/node/generated/client",
     );

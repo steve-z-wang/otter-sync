@@ -1,4 +1,4 @@
-import type { Database } from "../../packages/server/index.mts";
+import type { Database } from "../../packages/backend/server/index.mts";
 // Test lifecycle observation only: preserve transaction semantics and drain
 // already admitted backend work before disposing its PostgreSQL connection.
 export function drainedDatabase<Tx>(database: Database<Tx>) {

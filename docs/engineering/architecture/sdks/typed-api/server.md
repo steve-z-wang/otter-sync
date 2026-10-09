@@ -21,7 +21,7 @@ The initiating Stream comes from the authenticated bound request; it is not call
 
 ## 5. Building Block View
 
-[Generated backend emission](../../../../../crates/compiler/src/emit.rs) supplies contracts. [server/index.mts](../../../../../packages/server/index.mts) validates registration, decodes typed inputs, executes application callbacks and collects declarations. [Protocol 5](../../protocol/0.5.md) owns fenced materialization/receipt rules; [host interface](../../server/backend-interface.md) owns the adapter boundary.
+[Generated backend emission](../../../../../crates/compiler/src/emit.rs) supplies contracts. [server/index.mts](../../../../../packages/backend/server/index.mts) validates registration, decodes typed inputs, executes application callbacks and collects declarations. [Protocol 5](../../protocol/0.5.md) owns fenced materialization/receipt rules; [host interface](../../server/backend-interface.md) owns the adapter boundary.
 
 ## 9. Architecture Decisions
 

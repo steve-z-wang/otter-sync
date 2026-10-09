@@ -46,13 +46,13 @@ test(
       const result = await promisify(execFile)(
         "dart",
         [
-          `--packages=${new URL("../../packages/dart/.dart_tool/package_config.json", import.meta.url).pathname}`,
+          `--packages=${new URL("../../packages/frontend/dart/.dart_tool/package_config.json", import.meta.url).pathname}`,
           new URL("./parity_client.dart", import.meta.url).pathname,
           server.url,
           dir,
         ],
         {
-          cwd: new URL("../../packages/dart/", import.meta.url).pathname,
+          cwd: new URL("../../packages/frontend/dart/", import.meta.url).pathname,
           timeout: 30000,
           env: process.env,
         },

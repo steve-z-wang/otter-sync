@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
-import { Client } from "../../packages/client-js/index.mts";
-import { Bridge } from "../../packages/client-js/bridge.mts";
+import { Client } from "../../packages/frontend/client-js/index.mts";
+import { Bridge } from "../../packages/frontend/client-js/bindings/bridge.mts";
 import {
   GeneratedClient,
   schema,
@@ -17,7 +17,7 @@ import {
 import { GeneratedClient as RolloverClient } from "./rollover/client.ts";
 import { GeneratedClient as VersionedClient } from "./versioned/client.ts";
 import { host } from "./server.mjs";
-import { isRetryableTransactionError } from "../../packages/server/retryable.mts";
+import { isRetryableTransactionError } from "../../packages/backend/server/bindings/retryable.mts";
 
 const assertReportedExhaustion = (h) => {
   const escaped = h.transactions.filter((tx) => tx.outcome === "escaped");

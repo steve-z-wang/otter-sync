@@ -68,7 +68,7 @@ npm install --no-audit --no-fund --loglevel=error "${archives[@]}" \
 # The installed packages carry compiled JavaScript and nothing from the source tree.
 sources="$(find node_modules/@axtonjs -name '*.mts' ! -name '*.d.mts')"
 [[ -z "$sources" ]] || fail "TypeScript sources installed: $sources"
-if grep -rlE --include='*.*js' --include='*.d.*ts' 'bindings/node|packages/(server|client-js|postgres)' node_modules/@axtonjs; then
+if grep -rlE --include='*.*js' --include='*.d.*ts' 'bindings/node|packages/((backend/)?(server|postgres)|(frontend/)?client-js)' node_modules/@axtonjs; then
   fail "installed packages reference the source tree"
 fi
 

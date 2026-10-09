@@ -7,9 +7,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Bridge } from "../../../packages/client-js/bridge.mts";
-import { createClient } from "../../../packages/client-js/runtime.mts";
-import { Transaction } from "../../../packages/client-js/transaction.mts";
+import { Bridge } from "../../../packages/frontend/client-js/bindings/bridge.mts";
+import { createClient } from "../../../packages/frontend/client-js/api/runtime.mts";
+import { Transaction } from "../../../packages/frontend/client-js/api/transaction.mts";
 
 const openBridge=(carrier,request,install)=>Bridge.open(carrier,{stream:"User:viewer",...request},install);
 
@@ -970,7 +970,7 @@ function script(source, flags = []) {
   });
 }
 const bridgeModule = fileURLToPath(
-  new URL("../../../packages/client-js/bridge.mts", import.meta.url),
+  new URL("../../../packages/frontend/client-js/bindings/bridge.mts", import.meta.url),
 );
 const addon = fileURLToPath(
   new URL("../../../bindings/node/axton-node.node", import.meta.url),

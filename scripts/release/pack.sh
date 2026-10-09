@@ -65,7 +65,7 @@ napi="$root/node_modules/.bin/napi"
 rm -f "$stage"/native/*.node
 
 # The compiler: one executable per platform package, pinned by the launcher package.
-directories=("$stage/native" ./packages/server ./packages/client-js ./packages/postgres "$stage/cli")
+directories=("$stage/native" ./packages/backend/server ./packages/frontend/client-js ./packages/backend/postgres "$stage/cli")
 for target in "${targets[@]}"; do
   mkdir -p "$stage/cli/npm/$target/bin"
   install -m 755 "$artifacts/$target/axton" "$stage/cli/npm/$target/bin/axton"
@@ -80,12 +80,12 @@ npm pack "${directories[@]}" --pack-destination "$out" --json --loglevel=error >
 dart_package="$out/dart/axton"
 rm -rf "$dart_package"
 mkdir -p "$dart_package"
-git ls-files packages/dart | tar -cf - -T - | tar -xf - -C "$dart_package" --strip-components=2
+git ls-files packages/frontend/dart | tar -cf - -T - | tar -xf - -C "$dart_package" --strip-components=3
 rm "$dart_package/pubspec.lock" # pub never uploads it
 cp LICENSE "$dart_package/LICENSE"
 cp CHANGELOG.md "$dart_package/CHANGELOG.md"
 if compgen -G "$artifacts/libaxton_dart-*" >/dev/null; then
-  (cd packages/dart && dart run tool/write_native_manifest.dart --artifacts "$artifacts" --package "$dart_package" --targets "$dart_targets")
+  (cd packages/frontend/dart && dart run tool/write_native_manifest.dart --artifacts "$artifacts" --package "$dart_package" --targets "$dart_targets")
 else
   echo "no libaxton_dart artifacts in $artifacts: the staged Dart package lists no native libraries" >&2
 fi

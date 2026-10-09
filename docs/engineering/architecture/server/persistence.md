@@ -6,7 +6,7 @@ Persistence implements the strict Rust host operation contract inside the applic
 
 ## 5. Building Block View
 
-[Implementation](../../../../packages/postgres/migration.sql) owns this component. [Protocol 5](../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[Implementation](../../../../packages/backend/postgres/migration.sql) owns this component. [Protocol 5](../protocol/0.5.md) owns shared context, delivery and settlement rules.
 
 ## 10. Quality Requirements
 

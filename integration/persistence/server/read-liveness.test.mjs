@@ -5,8 +5,8 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { Pool } from "pg";
-import { createBackend } from "../../../packages/server/index.mts";
-import { pg } from "../../../packages/postgres/index.mts";
+import { createBackend } from "../../../packages/backend/server/index.mts";
+import { pg } from "../../../packages/backend/postgres/index.mts";
 const native = createRequire(import.meta.url)(
   "../../../bindings/node/axton-node.node",
 );
@@ -83,7 +83,7 @@ for (const kind of ["Query", "Fetch", "Query Model Loader"])
             await admin.query(
               await readFile(
                 new URL(
-                  "../../../packages/postgres/migration.sql",
+                  "../../../packages/backend/postgres/migration.sql",
                   import.meta.url,
                 ),
                 "utf8",
@@ -303,7 +303,7 @@ test("ordinary read refuses existing Store owner or Stream mismatch before appli
     await admin.query(`SET search_path=${namespace}`);
     await admin.query(
       await readFile(
-        new URL("../../../packages/postgres/migration.sql", import.meta.url),
+        new URL("../../../packages/backend/postgres/migration.sql", import.meta.url),
         "utf8",
       ),
     );

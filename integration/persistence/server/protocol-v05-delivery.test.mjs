@@ -11,8 +11,8 @@ import {
   createBackend,
   WebSocket,
   MutationRejected,
-} from "../../../packages/server/index.mts";
-import { pg } from "../../../packages/postgres/index.mts";
+} from "../../../packages/backend/server/index.mts";
+import { pg } from "../../../packages/backend/postgres/index.mts";
 const native = createRequire(import.meta.url)(
   "../../../bindings/node/axton-node.node",
 );
@@ -147,7 +147,7 @@ async function pull(r) {
 before(async () => {
   await q(
     await readFile(
-      new URL("../../../packages/postgres/migration.sql", import.meta.url),
+      new URL("../../../packages/backend/postgres/migration.sql", import.meta.url),
       "utf8",
     ),
   );

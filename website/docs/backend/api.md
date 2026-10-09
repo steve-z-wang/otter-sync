@@ -45,7 +45,7 @@ The generated `Options<Tx>` requires:
 | `protocol5` | Projection generation, retained materializations and transaction-bound Stream authorization |
 | `bootstrap({ctx})` | Optional initial-data preparation with typed track-only handles |
 
-`mutations` or `queries` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `admit`, `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
+`mutations` or `queries` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `admit`, `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/backend/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
 
 ## What your backend owns
 
@@ -377,6 +377,6 @@ wake();
 
 `loaderHooks` maps model names to `{ prepareForViewer(call): Promise<void> }`. The hook runs before that model's loader in the same request context. Its failure fails the affected read. The typed call provides `call.streams([...])` and `call.invalidate` for preparation publications; explicit preparation publications use the same transaction and cursor reservations. Use it only if viewer-specific preparation is needed; a loader already receives the user.
 
-`native?: Native` injects the native bridge when packaging it elsewhere. Its current entrypoints include `validateConfig`, `handshake05`, `validateMutationBatch`, `processBatchMember`, `encodeBatchAcknowledgement`, `processRead05`, `processDelivery05`, `processMaterialization05`, `processLive05` and `settleExternal05`; `negotiateLive`, `liveEvent` and `liveClose` manage the native socket session with the string/JSON callback contracts in the [SDK source](https://github.com/zanminwang/axton/blob/main/packages/server/index.mts). The default binding comes from this repository's Node addon. This is a packaging seam; the generated Mutations, Queries and Loaders remain the application contract.
+`native?: Native` injects the native bridge when packaging it elsewhere. Its current entrypoints include `validateConfig`, `handshake05`, `validateMutationBatch`, `processBatchMember`, `encodeBatchAcknowledgement`, `processRead05`, `processDelivery05`, `processMaterialization05`, `processLive05` and `settleExternal05`; `negotiateLive`, `liveEvent` and `liveClose` manage the native socket session with the string/JSON callback contracts in the [SDK source](https://github.com/zanminwang/axton/blob/main/packages/backend/server/index.mts). The default binding comes from this repository's Node addon. This is a packaging seam; the generated Mutations, Queries and Loaders remain the application contract.
 
 Backend methods marked `@internal` are used by the listener and tests. They are not the supported application-facing HTTP integration surface.

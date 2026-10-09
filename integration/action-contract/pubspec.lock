@@ -4,7 +4,7 @@ packages:
   axton:
     dependency: "direct main"
     description:
-      path: "../../packages/dart"
+      path: "../../packages/frontend/dart"
       relative: true
     source: path
     version: "0.5.4"

@@ -10,14 +10,14 @@ import assert from "node:assert/strict";
 import {
   ActionRegistry,
   CallError,
-} from "../../../packages/client-js/actions.mts";
-import { Client } from "../../../packages/client-js/index.mts";
+} from "../../../packages/frontend/client-js/api/actions.mts";
+import { Client } from "../../../packages/frontend/client-js/index.mts";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { createClient } from "../../../packages/client-js/runtime.mts";
-import { Transaction } from "../../../packages/client-js/transaction.mts";
+import { createClient } from "../../../packages/frontend/client-js/api/runtime.mts";
+import { Transaction } from "../../../packages/frontend/client-js/api/transaction.mts";
 
 test("observer retains a live wait, settles once, and caches the outcome", async () => {
   const registry = new ActionRegistry();

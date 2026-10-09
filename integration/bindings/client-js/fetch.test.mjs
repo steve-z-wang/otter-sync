@@ -11,10 +11,10 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CallError } from "../../../packages/client-js/actions.mts";
-import { createClient } from "../../../packages/client-js/runtime.mts";
-import { Transaction } from "../../../packages/client-js/transaction.mts";
-import { createServerConnection } from "../../../packages/client-js/live.mts";
+import { CallError } from "../../../packages/frontend/client-js/api/actions.mts";
+import { createClient } from "../../../packages/frontend/client-js/api/runtime.mts";
+import { Transaction } from "../../../packages/frontend/client-js/api/transaction.mts";
+import { createServerConnection } from "../../../packages/frontend/client-js/bindings/live.mts";
 
 const native = createRequire(import.meta.url)(
   "../../../bindings/node/axton-node.node",

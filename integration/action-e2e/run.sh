@@ -12,11 +12,11 @@ esac
 export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
 cd "$root"
 cargo run -p axton-compiler --locked -- compile integration/action-e2e/source integration/action-e2e \
-  --backend-runtime ../../packages/server/index.mts \
-  --client-runtime ../../packages/client-js/index.mts
+  --backend-runtime ../../packages/backend/server/index.mts \
+  --client-runtime ../../packages/frontend/client-js/index.mts
 cargo run -p axton-compiler --locked -- compile integration/action-e2e/evolved/source integration/action-e2e/evolved \
-  --backend-runtime ../../../packages/server/index.mts \
-  --client-runtime ../../../packages/client-js/index.mts
+  --backend-runtime ../../../packages/backend/server/index.mts \
+  --client-runtime ../../../packages/frontend/client-js/index.mts
 "$root/node_modules/.bin/tsc" -p integration/action-e2e
 dart pub get --directory integration/action-runtime-dart
 dart analyze integration/action-runtime-dart/action_e2e_publish.dart integration/action-runtime-dart/action_e2e_datetime.dart integration/action-runtime-dart/action_e2e_hook.dart

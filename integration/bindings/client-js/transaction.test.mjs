@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import {Transaction,strictJson} from '../../../packages/client-js/transaction.mts';
+import {Transaction,strictJson} from '../../../packages/frontend/client-js/api/transaction.mts';
 test('public callback context is disabled only after settlement, including rejection and finish failure',async()=>{
  const originalRun=AsyncLocalStorage.prototype.run;
  const originalDisable=AsyncLocalStorage.prototype.disable;

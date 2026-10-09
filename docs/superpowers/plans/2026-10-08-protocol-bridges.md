@@ -33,7 +33,7 @@ The three source lanes can run in parallel. Each keeps its existing package-root
 ## 1. Extract the contracts
 
 - [x] Historical baseline: `cargo test -p axton-client -p axton-server --locked` passed on 0.5.2 on 2026-10-08 (`/private/tmp/axton-protocol-bridges-baseline.log`). This does not verify the updated branch or refactor.
-- [ ] Before source edits, run the same focused Client/Server baseline on 0.5.4 and record its exact commit.
+- [x] Before source edits, Client/Server baseline passed on `c87188ae` (identical 0.5.4 source), exit 0; `/private/tmp/axton-protocol-bridges-v054-baseline.log`.
 - [ ] Move `crates/core/src/protocol_v05.rs` and `protocol_v05/{delivery,mutation}.rs` to `crates/protocols/src/sync.rs` and `sync/`, and their existing tests to the new crate.
 - [ ] Move `crates/client/src/runtime/protocol.rs` to `crates/protocols/src/client_bridge/mod.rs`. Move Operation, Readiness, Report and QuerySpec DTOs with it; keep query execution and mutation state in Client.
 - [ ] Move the contract portion of `crates/server/src/host.rs`, HandlerContext, stream-member DTOs and structured error carriers into `server_bridge`. Keep `HostExt::call_typed` in `crates/server/src/backend_interface.rs`.
@@ -98,6 +98,6 @@ git diff --check
 
 ## Current phase
 
-Specification and plan review only. No implementation source has been changed. Implementation starts after Steve approves the written scope and plan. Merging the refactor and merging/publishing a release remain separate operations; a new release follows `docs/engineering/releasing.md`.
+Steve approved implementation on 2026-10-09. Three isolated source lanes are underway; the parent owns integration and acceptance. Progress lives in SYN-23 and the ignored local execution ledger. Merging the refactor and merging/publishing a release remain separate operations; a new release follows `docs/engineering/releasing.md`.
 
 Readiness review on 2026-10-09 checked the actual 0.5.4 source and an independent read-only review found no blocking design gap. The existing docs-only branch was rebased onto the baseline above. This is planning evidence, not implementation or test acceptance.

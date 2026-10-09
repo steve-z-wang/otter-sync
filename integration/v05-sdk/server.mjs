@@ -2,8 +2,8 @@
 import { readFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { Pool } from "pg";
-import { createBackend as createRuntimeBackend } from "../../packages/server/index.mts";
-import { pg } from "../../packages/postgres/index.mts";
+import { createBackend as createRuntimeBackend } from "../../packages/backend/server/index.mts";
+import { pg } from "../../packages/backend/postgres/index.mts";
 import {
   createBackend,
   devAuth,
@@ -24,7 +24,7 @@ export async function host({
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   await pool.query(
     await readFile(
-      new URL("../../packages/postgres/migration.sql", import.meta.url),
+      new URL("../../packages/backend/postgres/migration.sql", import.meta.url),
       "utf8",
     ),
   );

@@ -1,8 +1,8 @@
 import { drainedDatabase } from "../e2e/lifecycle.mts";
-import { isRetryableTransactionError } from "../../packages/server/index.mts";
+import { isRetryableTransactionError } from "../../packages/backend/server/index.mts";
 import { readFile } from "node:fs/promises";
 import { Pool } from "pg";
-import { pg, type PgClient } from "../../packages/postgres/index.mts";
+import { pg, type PgClient } from "../../packages/backend/postgres/index.mts";
 import {
   CallRejected,
   createBackend,
@@ -434,7 +434,7 @@ export async function createFixture() {
     },
     async initialize() {
       const migration = await readFile(
-        new URL("../../packages/postgres/migration.sql", import.meta.url),
+        new URL("../../packages/backend/postgres/migration.sql", import.meta.url),
         "utf8",
       );
       await pool.query(migration); // one simple-protocol call: the file holds dollar-quoted functions

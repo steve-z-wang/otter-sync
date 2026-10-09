@@ -9,9 +9,9 @@ import { drizzle as orm } from "drizzle-orm/node-postgres";
 import {
   createBackend,
   MutationRejected,
-} from "../../../packages/server/index.mts";
-import { pg, prisma } from "../../../packages/postgres/index.mts";
-import { drizzle } from "../../../packages/postgres/src/drizzle.mts";
+} from "../../../packages/backend/server/index.mts";
+import { pg, prisma } from "../../../packages/backend/postgres/index.mts";
+import { drizzle } from "../../../packages/backend/postgres/src/drizzle.mts";
 const require = createRequire(import.meta.url);
 const native = require("../../../bindings/node/axton-node.node");
 const { PrismaClient } = require(
@@ -95,7 +95,7 @@ for (const [name, base] of adapters)
       await setup.query(`SET LOCAL search_path=${namespace}`);
       await setup.query(
         await readFile(
-          new URL("../../../packages/postgres/migration.sql", import.meta.url),
+          new URL("../../../packages/backend/postgres/migration.sql", import.meta.url),
           "utf8",
         ),
       );

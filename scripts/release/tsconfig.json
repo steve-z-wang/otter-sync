@@ -13,8 +13,8 @@
   },
   "files": [],
   "references": [
-    { "path": "../../packages/server" },
-    { "path": "../../packages/client-js" },
-    { "path": "../../packages/postgres" }
+    { "path": "../../packages/backend/server" },
+    { "path": "../../packages/frontend/client-js" },
+    { "path": "../../packages/backend/postgres" }
   ]
 }

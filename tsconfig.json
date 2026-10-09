@@ -10,10 +10,10 @@
     "skipLibCheck": true
   },
   "include": [
-    "packages/client-js/*.mts",
-    "packages/server/*.mts",
-    "packages/postgres/*.mts",
-    "packages/postgres/src/*.mts",
+    "packages/frontend/client-js/**/*.mts",
+    "packages/backend/server/**/*.mts",
+    "packages/backend/postgres/*.mts",
+    "packages/backend/postgres/src/*.mts",
     "integration/e2e/fixtures/round-trip/*.mts",
     "examples/todo/*.mts"
   ]

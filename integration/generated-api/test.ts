@@ -8,8 +8,8 @@ import {join} from 'node:path';
 import {GeneratedClient,CallError,type Call,type BootstrapPhase,type BootstrapStatus,type RefusedAct,type FailedAct,type FailedTask,type SubmittedAct} from './client.ts';
 import type {EntryIdentity, Placement, Status, Composition, PublishEntryOutput, RenameOutput, SubmitMutationPort, UnsentResolutionPort} from './generated.ts';
 import {ApplicationTransaction,CompanionContext,makeTransactionMutations} from './generated.ts';
-import type {Transaction as RawTransaction} from '../../packages/client-js/index.mts';
-import {Client as RawClient} from '../../packages/client-js/index.mts';
+import type {Transaction as RawTransaction} from '../../packages/frontend/client-js/index.mts';
+import {Client as RawClient} from '../../packages/frontend/client-js/index.mts';
 import {decodeEntry,encodeEntry,EntryModel,EntryLiveModel,GeneratedTransaction,type Entry,type ReadPort,type LivePort,type WritePort,type MutationName,type SyncState} from './generated.ts';
 const row:Entry={id:'123e4567-e89b-42d3-a456-426614174000',title:'hello',note:null,at:new Date('2026-01-01T00:00:00Z'),tags:['x'],status:'active'};
 const shared: import('./generated.ts').EntryFields = row;
@@ -152,7 +152,7 @@ check((await tx.models.entry.get({id:row.id}))?.at instanceof Date,'read decode'
 check((await tx.models.entry.query()).length===1,'query facade');await tx.models.entry.delete({id:row.id});
 // The generated adapter encodes typed input/callback through one named port.
 const submissions:{name:string;version:number;args:object}[]=[];
-const registry=new (await import('../../packages/client-js/actions.mts')).ActionRegistry();
+const registry=new (await import('../../packages/frontend/client-js/api/actions.mts')).ActionRegistry();
 const port:SubmitMutationPort={async submitMutation(name,version,input,decode){const args=typeof input==='function'?await input({...reads,async direct(){}}):input;submissions.push({name,version,args});return registry.register(String(submissions.length),decode);}};
 const mutations=makeTransactionMutations(port);
 const directCall:Call<PublishEntryOutput>=await mutations.publishEntry({entry:row,composition:row.id});
@@ -163,7 +163,7 @@ assert.equal((submissions[0]!.args as {entry:{at:string}}).entry.at,'2026-01-01T
 if(false){
  const client={} as GeneratedClient;
  void GeneratedClient.open({path:'s',stream:'User:viewer'});
- const runtime={} as typeof import('../../packages/client-js/index.mts').Client;
+ const runtime={} as typeof import('../../packages/frontend/client-js/index.mts').Client;
  // @ts-expect-error generic open also has no top-level generation
  void runtime.open({path:'s',schema:{},stream:'User:u',projectionGeneration:'2'});
  // @ts-expect-error projection generation belongs to the connection

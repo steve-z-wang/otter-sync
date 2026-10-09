@@ -6,7 +6,7 @@ Protocol-5 carriers retain Store/Stream/materialization context and exact reques
 
 ## 5. Building Block View
 
-[Implementation](../../../../../crates/core/src/protocol_v05.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[Implementation](../../../../../crates/protocols/src/sync.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
 
 ## 10. Quality Requirements
 

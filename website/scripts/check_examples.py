@@ -54,7 +54,7 @@ def check_load_guide():
         directory = Path(temp)
         (directory / 'schema.model').write_text(schema)
         subprocess.run([str(ROOT / 'target/debug/axton'), 'compile', str(directory), str(directory / 'generated'),
-                        '--backend-runtime', '../../../server/index.mts',
+                        '--backend-runtime', '../../../../backend/server/index.mts',
                         '--client-runtime', '../../../client-js/index.mts'], cwd=ROOT, check=True)
         print(f'Compiled schema from {source}')
         ts = directory / 'examples.mts'
@@ -81,7 +81,7 @@ def check():
     with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'packages/frontend/dart') as temp:
         directory = Path(temp)
         ts = directory / 'examples.mts'
-        ts.write_text('''import { GeneratedClient, PrerequisiteRetry, schema, AdmissionRefused, type StoreConnection } from '../../../integration/e2e/fixtures/round-trip/generated/client.ts';
+        ts.write_text('''import { GeneratedClient, PrerequisiteRetry, schema, AdmissionRefused, type StoreConnection } from '../../../../integration/e2e/fixtures/round-trip/generated/client.ts';
 import type { Transaction } from '../../client-js/index.mts';
 declare const client: GeneratedClient;
 declare const backendUrl: string;
@@ -118,7 +118,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:axton/axton.dart' show Client;
-import '../../../integration/e2e/fixtures/round-trip/generated/generated.dart';
+import '../../../../integration/e2e/fixtures/round-trip/generated/generated.dart';
 late GeneratedClient client;
 late StreamSubscription<List<Entry>> subscription;
 late HttpClient http;

@@ -2,8 +2,8 @@
 //!
 //! Every request the engine may issue is a [`HostRequest`] variant and every
 //! answer a host may give is one of the response types below. The TypeScript
-//! mirror is `packages/server/host-contract.mts` and the shared examples are
-//! `fixtures/protocol/host-operations.json`; a change here belongs in all three.
+//! mirror is `packages/backend/server/bindings/host-contract.mts`; shared examples
+//! are in `fixtures/protocol/host-operations.json`. A change belongs in all three.
 //!
 //! `handleAction` and `load` distinguish explicit business refusal from
 //! infrastructure failure. A refusal rolls back the Mutation's savepoint;
@@ -74,7 +74,7 @@ fn lock_order<'de, D: Deserializer<'de>>(
 }
 
 /// Every operation, in the order [`HostRequest`] declares them. The fixture
-/// and `packages/server/host-contract.mts` carry the same list; the contract
+/// and `packages/backend/server/bindings/host-contract.mts` carry the same list; the contract
 /// test checks this one against the enum itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

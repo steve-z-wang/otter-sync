@@ -22,7 +22,7 @@ dart analyze integration/action-contract/generated.dart
 dart analyze integration/action-contract/positive.dart
 bash integration/action-contract/check-negative.sh
 bash integration/action-runtime-ts/verify.sh
-"$root/node_modules/.bin/prettier" --check packages/frontend/client-js/*.mts packages/frontend/client-js/api/*.mts packages/frontend/client-js/bindings/*.mts packages/backend/server/*.mts packages/backend/server/api/*.mts packages/backend/server/bindings/*.mts packages/backend/postgres/*.mts packages/backend/postgres/src/*.mts packages/frontend/client-react-native/*.mts packages/frontend/client-react-native/index.ts packages/frontend/client-react-native/api/*.mts packages/frontend/client-react-native/api/*.ts packages/frontend/client-react-native/bindings/*.mts
+"$root/node_modules/.bin/prettier" --check "packages/frontend/client-js/**/*.mts" "packages/backend/server/**/*.mts" "packages/backend/postgres/**/*.mts" "packages/frontend/client-react-native/**/*.mts" packages/frontend/client-react-native/index.ts packages/frontend/client-react-native/api/index.ts
 "$root/node_modules/.bin/tsc" -p packages/frontend/client-react-native
 node --test packages/frontend/client-react-native/plugins/expo-path-spaces.test.cjs
 node --test integration/bindings/client-js/*.test.mjs packages/frontend/client-js/*.test.mjs

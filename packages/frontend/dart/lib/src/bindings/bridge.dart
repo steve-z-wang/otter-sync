@@ -17,7 +17,7 @@
 /// isolate shuts down, so every bridge of the C ABI carries a native finalizer
 /// that detaches its runtime then: no wake reaches a deleted callable, and the
 /// runtime closes and releases its database. See the
-/// [bridge contract](../../../../crates/client/src/runtime/protocol.rs).
+/// [bridge contract](../../../../../../crates/protocols/src/client_bridge/mod.rs).
 library;
 
 import 'dart:async';

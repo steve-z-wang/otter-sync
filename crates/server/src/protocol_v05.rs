@@ -1,4 +1,4 @@
-//! Protocol-5 carrier admission and publication adapter. Envelopes belong to core.
+//! Protocol-5 carrier admission and publication adapter. Envelopes belong to axton_protocols::sync.
 use crate::{
     Config, Host, HostResult, Result,
     host::{HostExt, HostRequest},

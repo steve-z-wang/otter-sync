@@ -10,4 +10,4 @@ Define the messages exchanged by Client and Server: bound Store context, immutab
 
 ## 10. Quality Requirements
 
-Moving these definitions changes neither discriminator 5 nor encoded data. [Contract tests](../../../../crates/protocols/tests/protocol_v05.rs) verify valid/invalid carriers and planning helpers; runtime and joined native tests establish their execution and commit guarantees separately.
+Moving these definitions changes neither discriminator 5 nor encoded data. [Contract tests](../../../../crates/protocols/tests/sync.rs) verify valid/invalid carriers and planning helpers; runtime and joined native tests establish their execution and commit guarantees separately.

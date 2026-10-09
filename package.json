@@ -14,7 +14,7 @@
     "build": "bash scripts/build.sh",
     "test": "bash scripts/test.sh",
     "typecheck": "tsc -p tsconfig.json",
-    "format": "prettier --write packages/frontend/client-js/*.mts packages/frontend/client-js/api/*.mts packages/frontend/client-js/bindings/*.mts packages/backend/server/*.mts packages/backend/server/api/*.mts packages/backend/server/bindings/*.mts packages/backend/postgres/*.mts packages/backend/postgres/src/*.mts"
+    "format": "prettier --write \"packages/frontend/client-js/**/*.mts\" \"packages/backend/server/**/*.mts\" \"packages/backend/postgres/**/*.mts\""
   },
   "devDependencies": {
     "@napi-rs/cli": "3.10.5",

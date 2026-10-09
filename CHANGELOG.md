@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.4](https://github.com/zanminwang/axton/compare/v0.5.3...v0.5.4) (2026-10-09)
+
+
+### Bug Fixes
+
+* batch PostgreSQL authority persistence ([#266](https://github.com/zanminwang/axton/issues/266)) ([#267](https://github.com/zanminwang/axton/issues/267)) ([0e70c8c](https://github.com/zanminwang/axton/commit/0e70c8cf0c7d60f5cc5c912eea2e96eb72a8e69b))
+
 ## [0.5.3](https://github.com/zanminwang/axton/compare/v0.5.2...v0.5.3) (2026-10-09)
 
 

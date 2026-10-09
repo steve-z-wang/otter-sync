@@ -71,7 +71,13 @@ let preparations = 0,
   loaderCalls = 0,
   fault = false,
   bootstrapTrack = false;
-function appFor(config) {
+function appFor(
+  config,
+  bootstrap = async ({ ctx }) => {
+    preparations++;
+    if (bootstrapTrack) ctx.stream.track.entry({ id: "e1" });
+  },
+) {
   return createBackend({
     config,
     native,
@@ -84,10 +90,7 @@ function appFor(config) {
     },
     authenticate: () => "alice",
     onError: () => {},
-    bootstrap: async ({ ctx }) => {
-      preparations++;
-      if (bootstrapTrack) ctx.stream.track.entry({ id: "e1" });
-    },
+    bootstrap,
     loaders: {
       entry: async ({ tx, ids }) => {
         loaderCalls++;
@@ -571,6 +574,81 @@ test("preparation publishes before the initial head, retries only replay committ
     bootstrapTrack = false;
   }
 });
+for (const [name, prefix] of [
+  ["count", ""],
+  ["bytes", "x".repeat(1100)],
+]) {
+  test(`fresh Bootstrap preparation exceeds read-page ${name} bounds and delivers every tracked record`, async () => {
+    const count = 1205;
+    await fixture(0);
+    await q("DELETE FROM axton_stream");
+    await q(
+      "INSERT INTO delivery_business SELECT $1||i,'value'||i FROM generate_series(1,$2) i",
+      [prefix + "fresh", count],
+    );
+    let calls = 0;
+    const chosen = appFor(config, async ({ ctx }) => {
+      calls++;
+      const ids = (
+        await ctx.tx.query("SELECT id FROM delivery_business ORDER BY id")
+      ).rows;
+      for (let start = 0; start < ids.length; start += 300) {
+        ctx.stream.track.entry(ids.slice(start, start + 300));
+      }
+      ctx.stream.track.entry(ids); // Repeated tracks keep the same membership.
+    });
+    const storeId = `fresh-${name}`;
+    const request = { protocol: 5, storeId, stream: "User:alice" };
+    const ack = JSON.parse(
+      await chosen.handshake("alice", JSON.stringify(request)),
+    );
+    assert.equal(ack.head, 1);
+    assert.equal(
+      (await q("SELECT count(*) n FROM axton_stream_record"))[0].n,
+      String(count),
+    );
+    assert.equal(
+      (
+        await q("SELECT bootstrap_prepared FROM axton_store WHERE id=$1", [
+          storeId,
+        ])
+      )[0].bootstrap_prepared,
+      true,
+    );
+    await chosen.handshake("alice", JSON.stringify(request));
+    assert.equal(calls, 1);
+
+    const r = delta(storeId, 0, ack.head);
+    const first = JSON.parse(await chosen.pull("alice", JSON.stringify(r)));
+    const changes = [...first.parts.flatMap((p) => p.changes)];
+    for (let unit = 0; unit < first.header.units.length; unit++) {
+      for (let part = 0; part < first.header.units[unit].parts.length; part++) {
+        if (first.parts.some((p) => p.unit === unit && p.part === part))
+          continue;
+        const page = JSON.parse(
+          await chosen.pull(
+            "alice",
+            JSON.stringify({
+              ...r,
+              continuation: {
+                planId: first.header.planId,
+                digest: first.header.digest,
+                unit,
+                part,
+              },
+            }),
+          ),
+        );
+        changes.push(...page.parts.flatMap((p) => p.changes));
+      }
+    }
+    assert.equal(changes.length, count);
+    assert.equal(new Set(changes.map((c) => c.key.identity.id)).size, count);
+    assert.ok(
+      changes.every((c) => c.state?.text.startsWith("value") && c.cursor === 1),
+    );
+  });
+}
 test("WebSocket offers frozen complete units; reconnect head leaves HTTP gap repair available", async () => {
   await fixture(1);
   const errors = [];

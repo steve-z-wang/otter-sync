@@ -1,6 +1,6 @@
 # Architecture
 
-See the [component documentation index](architecture/README.md) for individual design documents. Protocol 5 behavior is owned by [protocol 5](architecture/protocol/0.5.md), [client storage](architecture/client/storage/protocol5.md), [the server](architecture/server/protocol5.md) and [current guarantees](guarantees.md). Protocol 4 and older carrier pages are historical references; they do not promise a supported migration. See [adoption](protocol5-adoption.md) for fresh-file and release gates.
+See the [component documentation index](architecture/README.md) for individual design documents. Protocol 5 behavior is owned by [protocol 5](architecture/protocols/sync.md), [client storage](architecture/client/storage/protocol5.md), [the server](architecture/server/protocol5.md) and [current guarantees](guarantees.md). Protocol 4 and older carrier pages are historical references; they do not promise a supported migration. See [adoption](protocol5-adoption.md) for fresh-file and release gates.
 
 ## Core
 
@@ -8,9 +8,9 @@ Five parts carry the product: three define what synchronization guarantees, two 
 
 | Core part | Why |
 | --- | --- |
-| [Protocol](architecture/protocol/0.5.md) | The shared wire contract: bound contexts, Stream positions, immutable Batches, null-cursor snapshots and finite complete delivery units. |
+| [Protocol](architecture/protocols/sync.md) | The shared wire contract: bound contexts, Stream positions, immutable Batches, null-cursor snapshots and finite complete delivery units. |
 | [Client / Engine](architecture/client/storage/protocol5.md) | Local transactions, durable named Mutations, Stream authority, read protection and committed settlement. |
-| [Client / Frontend interface](architecture/sdks/typed-api/client.md) | One client/file/Stream, local Model reads and writes, typed Mutations, Query/Fetch and Bootstrap. The [runtime](architecture/client/runtime.md) owns scheduling. |
+| [Client / Frontend interface](architecture/frontend-sdk/api.md) | One client/file/Stream, local Model reads and writes, typed Mutations, Query/Fetch and Bootstrap. The [runtime](architecture/client/runtime.md) owns scheduling. |
 | [Server / Engine](architecture/server/protocol5.md) | Fenced publication and materialization, explicit tracking, durable outcomes and finite delivery coverage. |
 | [Server / Backend interface](architecture/server/backend-interface.md) | What a backend author writes against: the host contract between handlers/loaders and the engine. |
 
@@ -36,10 +36,10 @@ The tree stops at three levels: AXTON, a component, a part. A part that has inte
   - **[Validate](architecture/compiler/validate.md)** — Check types, references and mutations in the parsed definitions.
   - **[Generate](architecture/compiler/generate.md)** — Produce runtime descriptors and typed SDK interfaces from validated definitions.
 - **[Frontend SDK](architecture/frontend-sdk/README.md)** — Typed client calls and their language/native adapters.
-  - **[API](architecture/sdks/typed-api/client.md)** — Application-facing reads, writes, Mutations, Query/Fetch and Bootstrap.
+  - **[API](architecture/frontend-sdk/api.md)** — Application-facing reads, writes, Mutations, Query/Fetch and Bootstrap.
   - **[Bindings](architecture/frontend-sdk/bindings.md)** — Client bridge routing and platform effects.
 - **[Backend SDK](architecture/backend-sdk/README.md)** — Backend registration and its language/native adapters.
-  - **[API](architecture/sdks/typed-api/server.md)** — Handler/Loader registration, Stream selectors and backend construction.
+  - **[API](architecture/backend-sdk/api.md)** — Handler/Loader registration, Stream selectors and backend construction.
   - **[Bindings](architecture/backend-sdk/bindings.md)** — Native invocation and retained host dispatch.
 - **[Client runtime (Rust)](architecture/client/README.md)** — Local state, storage and sync.
   - **[Runtime](architecture/client/runtime.md)** — Own every task from submission to outcome: scheduling, the application transaction, the connection lanes, direct calls and observers.
@@ -118,8 +118,8 @@ Where each part lives. A part with its own tree carries the finer map in its REA
 | Client / Runtime | [client/runtime](../../crates/client/src/runtime) (`ClientRuntime`; `protocol.rs` re-exports the extracted Client bridge) ([modules](architecture/client/runtime.md#5-building-block-view)) |
 | Client / Frontend interface | [client/frontend_interface.rs](../../crates/client/src/frontend_interface.rs); per-transaction handle in [client/engine.rs](../../crates/client/src/engine.rs) |
 | Client / Engine | [sync05](../../crates/client/src/sync05), [store05.rs](../../crates/client/src/store05.rs) and [settlement05.rs](../../crates/client/src/settlement05.rs) own durable Batches, finite apply and queue-owned settlement. |
-| Client / Storage | [client/store.rs](../../crates/client/src/store.rs), [client/ddl.rs](../../crates/client/src/ddl.rs), [client/schema_store.rs](../../crates/client/src/store05.rs), [sqlite/lib.rs](../../crates/sqlite/src/lib.rs) ([map](architecture/client/storage/README.md)) |
-| Client / Connection | [client/connection.rs](../../crates/client/src/runtime/lanes.rs), [client/transport.rs](../../crates/client/src/runtime/lanes.rs), [client/downlink_worker.rs](../../crates/client/src/sync05/downlink.rs), [client/live.rs](../../crates/client/src/sync05/delivery_queue.rs), driven by [client/runtime/lanes.rs](../../crates/client/src/runtime/lanes.rs); effect executors in [Node connection](../../packages/frontend/client-js/bindings/connection.mts) and [Dart connection](../../packages/frontend/dart/lib/src/bindings/connection.dart) ([map](architecture/client/connection/README.md)) |
+| Client / Storage | [client/store.rs](../../crates/client/src/store.rs), [client/ddl.rs](../../crates/client/src/ddl.rs), [client/store05.rs](../../crates/client/src/store05.rs), [sqlite/lib.rs](../../crates/sqlite/src/lib.rs) ([map](architecture/client/storage/README.md)) |
+| Client / Connection | [runtime/lanes.rs](../../crates/client/src/runtime/lanes.rs), [sync05/downlink.rs](../../crates/client/src/sync05/downlink.rs), [sync05/delivery_queue.rs](../../crates/client/src/sync05/delivery_queue.rs); effect executors in [Node connection](../../packages/frontend/client-js/bindings/connection.mts) and [Dart connection](../../packages/frontend/dart/lib/src/bindings/connection.dart) ([map](architecture/client/connection/README.md)) |
 | Server / Backend interface | [backend_interface.rs](../../crates/server/src/backend_interface.rs) owns Host/typed invocation; [Server bridge](../../crates/protocols/src/server_bridge) owns operation definitions; [SDK bindings](../../packages/backend/server/bindings) dispatch application callbacks. |
 | Server / Engine | [server/protocol_v05.rs](../../crates/server/src/protocol_v05.rs), [mutation_batch.rs](../../crates/server/src/mutation_batch.rs) and [delivery_plan.rs](../../crates/server/src/delivery_plan.rs) dispatch protocol-5 work through the shared host. The [Backend SDK API](../../packages/backend/server/api) exposes publication and connection construction; its [Bindings](../../packages/backend/server/bindings) invoke the engine. |
 | Server / Persistence | `Database<T>` exposed by the [Server API](../../packages/backend/server/api); SQL, driver interface and the `pg`/`prisma`/`drizzle` shims in [packages/backend/postgres](../../packages/backend/postgres); tables in [migration.sql](../../packages/backend/postgres/migration.sql) |

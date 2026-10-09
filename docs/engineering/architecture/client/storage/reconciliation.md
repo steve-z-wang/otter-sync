@@ -6,11 +6,8 @@ Schema artifacts preserve the original Mutation input contract and exact frozen 
 
 ## 5. Building Block View
 
-[Implementation](../../../../../crates/client/src/store05.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[Implementation](../../../../../crates/client/src/store05.rs) owns this component. [Protocol 5](../../protocols/sync.md) owns shared context, delivery and settlement rules.
 
-## 10. Quality Requirements
-
-Changes must preserve the component boundary and the protocol’s commit/failure rules. The joined native gate `integration/v05-sdk/run-host.sh` exercises the generated client, real HTTP/WebSocket backend and SQLite. Installed-package and mobile evidence are separate adoption gates.
 
 ### The table contract
 

@@ -6,12 +6,9 @@ The engine admits Store/Stream/context and exact immutable intent before applica
 
 ## 5. Building Block View
 
-[Implementation](../../../../../crates/server/src/protocol_v05.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[Implementation](../../../../../crates/server/src/protocol_v05.rs) owns this component. [Protocol 5](../../protocols/sync.md) owns shared context, delivery and settlement rules.
 
-- [loads](loads.md)
 - [publish](publish.md)
-- [pull](pull.md)
-- [push](push.md)
 
 ## 10. Quality Requirements
 

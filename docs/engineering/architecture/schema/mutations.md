@@ -24,7 +24,7 @@ The caller's descriptor fingerprint belongs to immutable intent; it does not rep
 
 ## 6. Runtime View
 
-The local transaction saves named input, optimism and companions together. Default values for fresh creates are evaluated once before that input freezes; retries do not regenerate them. Direct Model writes and companions are device-only. The backend executes each Batch member independently and persists its immutable outcome. An accepted Call settles locally only after its required authority/evidence commits. [Protocol 5](../protocol/0.5.md) owns execution, retry and settlement boundaries.
+The local transaction saves named input, optimism and companions together. Default values for fresh creates are evaluated once before that input freezes; retries do not regenerate them. Direct Model writes and companions are device-only. The backend executes each Batch member independently and persists its immutable outcome. An accepted Call settles locally only after its required authority/evidence commits. [Protocol 5](../protocols/sync.md) owns execution, retry and settlement boundaries.
 
 An empty allowed update patch remains a valid no-op input. Its handler still runs; declared publication and Loader readback follow the normal rules. No identity stamp is allocated. A returned Model identity alone never tracks a Stream.
 

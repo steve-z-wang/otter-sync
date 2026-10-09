@@ -12,7 +12,7 @@ Local writes become visible in their transaction and durable at commit. Named Mu
 | Direct Model write | `tx.models.<model>` | Never | Survives earlier Call refusal when its base still exists |
 | Companion | The Mutation's owned local callback | Never | Kept on acceptance; removed on refusal |
 
-One application transaction may submit several Calls and direct writes. They commit locally together, but Calls have independent backend outcomes. The callback is never persisted or replayed. See the [typed client](../../../sdks/typed-api/client.md) for callback scope and the two Mutation completion boundaries.
+One application transaction may submit several Calls and direct writes. They commit locally together, but Calls have independent backend outcomes. The callback is never persisted or replayed. See the [typed client](../../../frontend-sdk/api.md) for callback scope and the two Mutation completion boundaries.
 
 ## 5. Building Block View
 
@@ -32,7 +32,7 @@ A delete cascades through declared local relations once per identity, including 
 
 A direct write never queues a Call. On a dirty record, its journal entry keeps its position above earlier pending work. It cannot preserve a row whose only pending creation is refused. Later proved server authority may replace independent or accepted local state; that is distinct from undoing it because an earlier Call failed.
 
-Records have no publication stamp. Stream cursor guards and call-owned evidence decide authority installation; duplicate delivery cannot undo newer authority. Ordinary null-cursor Query/Fetch records can populate unprotected cache, but cannot replace protected Stream state, clear a tombstone or advance progress. [Protocol 5](../../../protocol/0.5.md) owns these rules.
+Records have no publication stamp. Stream cursor guards and call-owned evidence decide authority installation; duplicate delivery cannot undo newer authority. Ordinary null-cursor Query/Fetch records can populate unprotected cache, but cannot replace protected Stream state, clear a tombstone or advance progress. [Protocol 5](../../../protocols/sync.md) owns these rules.
 
 ## 10. Quality Requirements
 

@@ -6,7 +6,7 @@ Push means durable protocol-5 Batch execution. Ready named Mutations retain exac
 
 ## 5. Building Block View
 
-[Implementation](../../../../../../crates/client/src/sync05/uplink.rs) owns this component. [Protocol 5](../../../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[Implementation](../../../../../../crates/client/src/sync05/uplink.rs) owns this component. [Protocol 5](../../../protocols/sync.md) owns shared context, delivery and settlement rules.
 
 - [batching](batching.md)
 - [dependencies](dependencies.md)

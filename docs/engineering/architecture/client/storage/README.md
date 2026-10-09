@@ -6,7 +6,7 @@ The storage adapter executes SQL and transactions; Rust owns reconciliation poli
 
 ## 5. Building Block View
 
-[Implementation](../../../../../crates/client/src/store05.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
+[Implementation](../../../../../crates/client/src/store05.rs) owns this component. [Protocol 5](../../protocols/sync.md) owns shared context, delivery and settlement rules.
 
 - [protocol5](protocol5.md)
 - [reconciliation](reconciliation.md)

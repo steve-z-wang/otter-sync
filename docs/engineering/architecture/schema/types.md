@@ -28,13 +28,13 @@ Rules:
 - An enum declares non-empty, unique identifier values; a value may carry `@deprecated(reason: "…")`, which reaches generated code only ([Mutations](mutations.md#9-architecture-decisions)).
 - A list element must be a scalar; a list of enums or of lists is refused. A list cannot be nullable.
 - `null` is accepted only for a nullable field.
-- A `DateTime` keeps millisecond precision because a JavaScript `Date` cannot carry more. Normalization drops the sub-millisecond part, moving a pre-1970 instant to the earlier millisecond; generated Dart applies the same truncation before encoding ([Typed API / Client](../sdks/typed-api/client.md)), and every decoded Dart `DateTime` is UTC.
+- A `DateTime` keeps millisecond precision because a JavaScript `Date` cannot carry more. Normalization drops the sub-millisecond part, moving a pre-1970 instant to the earlier millisecond; generated Dart applies the same truncation before encoding ([Typed API / Client](../frontend-sdk/api.md)), and every decoded Dart `DateTime` is UTC.
 
 Code: source names and list/nullable parsing in [compiler/parse.rs](../../../../crates/compiler/src/parse.rs); type resolution in [compiler/validate.rs](../../../../crates/compiler/src/validate.rs); descriptor validation and value normalization in [core/schema.rs](../../../../crates/core/src/schema.rs); language mapping in [compiler/emit.rs](../../../../crates/compiler/src/emit.rs); column types in [client/ddl.rs](../../../../crates/client/src/ddl.rs).
 
 ## 8. Crosscutting Concepts
 
-The same normalization runs wherever a value enters a record: before an operation is queued ([Local operations](../client/engine/local-operations/README.md)), when the server decodes arguments and loader rows ([Server Push](../server/engine/push.md), [Server Pull](../server/engine/pull.md)), and when a received state is applied ([Client Pull](../client/engine/pull.md)). Query ordering compares normalized values: strings by UTF-16 code units, numbers as floating point, nulls first ([Queries](../client/engine/local-operations/queries.md)).
+The same normalization runs wherever a value enters a record: before an operation is queued ([Local operations](../client/engine/local-operations/README.md)), when the server decodes arguments and loader rows ([server execution](../server/protocol5.md), [server delivery](../server/protocol5.md)), and when a received state is applied ([Sync](../protocols/sync.md)). Query ordering compares normalized values: strings by UTF-16 code units, numbers as floating point, nulls first ([Queries](../client/engine/local-operations/queries.md)).
 
 ## 10. Quality Requirements
 

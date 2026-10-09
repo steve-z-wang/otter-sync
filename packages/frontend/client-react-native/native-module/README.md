@@ -2,7 +2,7 @@
 
 Reusable iOS Expo module that carries AXTON's Rust-owned client runtime
 ([#134](https://github.com/zanminwang/axton/issues/134)) for the shared
-TypeScript Bridge. See [SDK bindings](../../../../docs/engineering/architecture/sdks/bindings.md)
+TypeScript Bridge. See [SDK bindings](../../../../docs/engineering/architecture/frontend-sdk/bindings.md)
 for the carrier contract.
 
 The Expo module is named `AxtonNative` and exposes:

@@ -208,6 +208,10 @@ Instant Cloud is closed to new signups and will shut down on August 31, 2027. Yo
 
 ## Project status
 
-AXTON is an early alpha: its API is unstable and it is not ready for production use. Existing integrations must follow the [AXTON rename notes](docs/engineering/brand-rename.md) before upgrading from a pre-rename build.
+AXTON is an early alpha: its API is unstable and it is not ready for production use. Existing integrations must follow the [AXTON rename notes](docs/engineering/history/pre-protocol5/brand-rename.md) before upgrading from a pre-rename build.
 
 [Schema guide](website/docs/schema/reference.md) · [Client guide](website/docs/frontend/setup.md) · [Backend guide](website/docs/backend/setup.md)
+
+## Integration names
+
+Rust crates use `axton-*` and imports use `axton_*`; the compiler command is `axton`. JavaScript packages use `@axtonjs/*`; unpublished React Native packages retain `@axton/*`. Dart imports use `package:axton/axton.dart`. Native libraries and C symbols use `axton`; the Expo module is `AxtonNative`. Environment variables use `AXTON_*`. Storage admission and adoption limits belong to [Protocol 5 adoption](docs/engineering/protocol5-adoption.md).

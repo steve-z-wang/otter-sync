@@ -1,6 +1,6 @@
 # Guarantees
 
-The requirements for protocol 5. A passing component test does not establish every cross-runtime guarantee; [coverage review](testing/review.md) records evidence and gaps. The [0.3 contract](guarantees-0.3.md) and protocol-4 pages are historical references, not supported file migrations or alternate public APIs.
+The requirements for protocol 5. A passing component test does not establish every cross-runtime guarantee; [coverage review](history/pre-protocol5/testing/review.md) records evidence and gaps. The [0.3 contract](history/pre-protocol5/guarantees-0.3.md) and protocol-4 pages are historical references, not supported file migrations or alternate public APIs.
 
 Each client owns one physical SQLite file, one Store and one Stream. Different files may follow the same Stream. Authentication and publication of every change affecting Loader content or visibility are application responsibilities.
 
@@ -99,7 +99,7 @@ Query/Fetch Model snapshots always carry `cursor:null`. Storage checks current p
 
 ## N. Native Loads
 
-Public Load jobs/schema declarations and N1–N8 are retired. The [0.3 contract](guarantees-0.3.md#n-native-loads) retains internal compatibility requirements. Protocol 5 uses Bootstrap, Query and Model Fetch.
+Public Load jobs/schema declarations and N1–N8 are retired. The [0.3 contract](history/pre-protocol5/guarantees-0.3.md#n-native-loads) retains internal compatibility requirements. Protocol 5 uses Bootstrap, Query and Model Fetch.
 
 ## R. Resilience
 
@@ -112,4 +112,4 @@ Public Load jobs/schema declarations and N1–N8 are retired. The [0.3 contract]
 
 Explicit reset retains binding/file ownership, changes incarnation and atomically retires replica state. It refuses pending work unless explicitly discarded, reports abandoned Calls and fences old effects. Supported schema reconciliation retains complete old descriptors; incompatible storage changes fail explicitly.
 
-Batch replay retains current/last-completed outcomes and prunes the older set on valid next-Batch admission. Immutable delivery staging expires after five minutes; expiry proves no coverage. Capacity limits fail explicitly. [Protocol 5](architecture/protocol/0.5.md), [client](architecture/client/storage/protocol5.md) and [server](architecture/server/protocol5.md) own mechanisms and bounds; [adoption](protocol5-adoption.md) owns release gates and limits.
+Batch replay retains current/last-completed outcomes and prunes the older set on valid next-Batch admission. Immutable delivery staging expires after five minutes; expiry proves no coverage. Capacity limits fail explicitly. [Protocol 5](architecture/protocols/sync.md), [client](architecture/client/storage/protocol5.md) and [server](architecture/server/protocol5.md) own mechanisms and bounds; [adoption](protocol5-adoption.md) owns release gates and limits.

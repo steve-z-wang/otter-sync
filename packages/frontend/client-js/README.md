@@ -16,7 +16,7 @@ The package keeps the language objects (Promises, Call handles, subscription
 handles, transaction contexts) and the platform adapters the runtime asks for
 as effects: HTTP, the WebSocket, timers, `refreshAuth`, prerequisite handlers
 and transaction callbacks. See
-[SDK bindings](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/sdks/bindings.md) for the
+[SDK bindings](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/frontend-sdk/bindings.md) for the
 contract.
 
 Each Client owns one physical format-5 SQLite file and one Stream. Open with `path`, `schema`, `stream` and an optional connection; generated clients supply schema. Protocol 5 requires fresh storage, refuses unsupported files intact and supplies no old-format upgrade or compatibility bridge.

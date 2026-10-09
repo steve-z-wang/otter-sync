@@ -6,8 +6,4 @@ Explicit track creates interest with a real discoverable position; repeat live t
 
 ## 5. Building Block View
 
-[Implementation](../../../../../crates/server/src/delivery_plan.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
-
-## 10. Quality Requirements
-
-Changes must preserve the component boundary and the protocol’s commit/failure rules. The joined native gate `integration/v05-sdk/run-host.sh` exercises the generated client, real HTTP/WebSocket backend and SQLite. Installed-package and mobile evidence are separate adoption gates.
+[settlement.rs](../../../../../crates/server/src/settlement.rs) normalizes tracking/invalidation, locks Streams and applies final membership through the Host. The [SDK effects collector](../../../../../packages/backend/server/bindings/effects.mts) records declarations; [PostgreSQL persistence](../../../../../packages/backend/postgres/src/persistence.mts) answers the retained Host requests. [Protocol 5](../../protocols/sync.md) owns shared context, delivery and settlement rules.

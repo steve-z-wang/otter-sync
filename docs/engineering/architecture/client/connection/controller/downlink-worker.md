@@ -7,4 +7,3 @@ DeltaApplier validates context, header and part digests, then admits bounded fra
 ## 5. Building Block View
 
 [Implementation](../../../../../../crates/client/src/sync05/delta_applier.rs) owns this component. [Protocol 5](../../../protocols/sync.md) owns shared context, delivery and settlement rules.
-

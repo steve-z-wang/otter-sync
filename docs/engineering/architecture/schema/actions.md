@@ -33,7 +33,7 @@ Queries and Fetch choose request-level `{store?: boolean}`, default true. Storag
 
 ## 5. Building Block View
 
-[Parser](../../../../crates/compiler/src/parse.rs), [validation](../../../../crates/compiler/src/validate.rs) and [history](../../../../crates/compiler/src/history.rs) own declarations and retained contracts. [Core actions](../../../../crates/core/src/actions.rs) normalizes inputs and results; [server delivery plans](../../../../crates/server/src/delivery_plan.rs) executes fresh reads and explicit tracking; [server Batches](../../../../crates/server/src/mutation_batch.rs) owns durable Mutation execution. [Generated typed APIs](../sdks/typed-api/README.md) own language interfaces.
+[Parser](../../../../crates/compiler/src/parse.rs), [validation](../../../../crates/compiler/src/validate.rs) and [history](../../../../crates/compiler/src/history.rs) own declarations and retained contracts. [Core actions](../../../../crates/core/src/actions.rs) normalizes inputs and results; [server delivery plans](../../../../crates/server/src/delivery_plan.rs) executes fresh reads and explicit tracking; [server Batches](../../../../crates/server/src/mutation_batch.rs) owns durable Mutation execution. [Generated typed APIs](../frontend-sdk/api.md) own language interfaces.
 
 ## 9. Architecture Decisions
 

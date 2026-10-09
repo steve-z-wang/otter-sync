@@ -7,4 +7,3 @@ The Node HTTP/WebSocket host authenticates requests, applies application admissi
 ## 5. Building Block View
 
 [Implementation](../../../../../packages/backend/server/index.mts) owns this component. [Protocol 5](../../protocols/sync.md) owns shared context, delivery and settlement rules.
-

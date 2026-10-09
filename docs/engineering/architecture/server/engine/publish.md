@@ -6,5 +6,4 @@ Explicit track creates interest with a real discoverable position; repeat live t
 
 ## 5. Building Block View
 
-[settlement.rs](../../../../../crates/server/src/settlement.rs) normalizes tracking/invalidation, locks Streams and applies final membership through the Host. The [SDK effects collector](../../../../../packages/backend/server/src/effects.mts) records declarations; [PostgreSQL persistence](../../../../../packages/backend/postgres/src/persistence.mts) answers the retained Host requests. [Protocol 5](../../protocols/sync.md) owns shared context, delivery and settlement rules.
-
+[settlement.rs](../../../../../crates/server/src/settlement.rs) normalizes tracking/invalidation, locks Streams and applies final membership through the Host. The [SDK effects collector](../../../../../packages/backend/server/bindings/effects.mts) records declarations; [PostgreSQL persistence](../../../../../packages/backend/postgres/src/persistence.mts) answers the retained Host requests. [Protocol 5](../../protocols/sync.md) owns shared context, delivery and settlement rules.

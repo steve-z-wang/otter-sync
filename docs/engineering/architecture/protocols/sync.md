@@ -61,4 +61,3 @@ Finite bounds do not imply short writer or publication-fence occupancy. Large un
 ## Protocol definitions
 
 [Sync contracts](../../../../crates/protocols/src/sync.rs) and their [delivery](../../../../crates/protocols/src/sync/delivery.rs) / [mutation](../../../../crates/protocols/src/sync/mutation.rs) helpers encode, validate and calculate pure protocol results. They use shared schema normalization and counters from core. Client/Server engines own persistence, scheduling, authority application and business execution.
-

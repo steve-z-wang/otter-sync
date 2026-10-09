@@ -12,7 +12,7 @@
 
 ### Guarantees
 
-[Guarantees](guarantees.md) describe the bound Store contract, including offline durability and convergence after delivery resumes. Tests check these requirements under their stated conditions. [Protocol-4 acceptance](history/pre-protocol5/testing/0.4.md) separates independent symbolic expectations, actual native/SQLite traces, production PostgreSQL process tests and language/package evidence. Historical compatibility tests are not substitutes for those paths.
+[Guarantees](guarantees.md) describe the bound Store contract, including offline durability and convergence after delivery resumes. Tests check these requirements under their stated conditions. [Protocol-5 adoption](protocol5-adoption.md) separates current host, capacity and installed-artifact gates.
 
 ### Component contracts
 
@@ -32,7 +32,7 @@ Component, integration and end-to-end describe the scope of a test. Simulation d
   - **[Server](testing/components/server.md)** — Request handling, handler/loader calls and publication.
 - **[Simulation](testing/simulation/README.md)** — Verify overall Rust sync behavior across clients and a server.
   - **[Scenarios](testing/simulation/scenarios.md)** — Named examples of the behavior promised by guarantees.
-  - **[Invariants](testing/simulation/invariants.md)** — Properties checked across generated operation sequences.
+  - **[Invariants](testing/simulation/invariants.md)** — Explicit properties checked by deterministic protocol-5 examples.
   - **[Failure and recovery](testing/simulation/recovery.md)** — Delivery faults, restart and reproducible failures.
 - **[Integration tests](testing/integration/README.md)** — Verify real boundaries and their contracts.
   - **[Storage and persistence](testing/integration/persistence.md)** — Database transactions, durability and concurrency.
@@ -46,19 +46,16 @@ Component, integration and end-to-end describe the scope of a test. Simulation d
 
 ## Code map
 
-Current test locations. Some suites support more than one responsibility.
-
-| Test area | Code location |
+| Responsibility | Current source |
 | --- | --- |
-| Component / Schema | [core contracts](../../crates/core/tests/contracts.rs), [compiler/tests](../../crates/compiler/tests) |
-| Component / Protocol | [core contracts](../../crates/core/tests/contracts.rs) |
-| Component / Compiler | [compiler/tests](../../crates/compiler/tests) |
-| Component / Client | Engine scenarios and live session transitions in [sqlite/tests](../../crates/sqlite/tests), the runtime in [runtime.rs](../../crates/sqlite/tests/runtime.rs) and [runtime_lanes.rs](../../crates/sqlite/tests/runtime_lanes.rs); scheduling tests in [client/connection.rs](../../crates/client/src/connection.rs) |
-| Component / Server | [server/tests](../../crates/server/tests) (`readback.rs` for the push readback, `host_contract.rs` for the twelve host operations, `stamp.rs` for stamps and pages) |
-| Simulation / Scenarios | [sim/tests](../../crates/sim/tests) |
-| Simulation / Invariants | Checks in [sim/src/invariants.rs](../../crates/sim/src/invariants.rs); runner in [sim/tests/invariants.rs](../../crates/sim/tests/invariants.rs) |
-| Simulation / Failure and recovery | [resilience.rs](../../crates/sim/tests/resilience.rs), [net.rs](../../crates/sim/src/net.rs), [shrink.rs](../../crates/sim/src/shrink.rs) |
-| Integration / Storage and persistence | SQLite contracts in [store.rs](../../crates/sqlite/tests/store.rs), [ddl.rs](../../crates/sqlite/tests/ddl.rs) and [rebuild.rs](../../crates/sqlite/tests/rebuild.rs); PostgreSQL in [integration/persistence](../../integration/persistence) |
-| Integration / SDKs and bindings | [bindings/common/tests](../../bindings/common/tests), [integration/bindings](../../integration/bindings), [packages/frontend/dart/test](../../packages/frontend/dart/test), [integration/generated-api](../../integration/generated-api) |
-| Integration / Connection | Client tests in [live.test.mjs](../../integration/bindings/client-js/live.test.mjs) and [live_test.dart](../../packages/frontend/dart/test/live_test.dart); server tests in [runtime.test.mjs](../../integration/persistence/server/runtime.test.mjs) |
-| End-to-end | [integration/e2e](../../integration/e2e); device smoke tests in [integration/platform](../../integration/platform) |
+| Schema | [core contracts](../../crates/core/tests/contracts.rs) |
+| Protocols | [protocol fixtures/tests](../../crates/protocols/tests) |
+| Compiler | [compiler tests](../../crates/compiler/tests) |
+| Client and SQLite | [SQLite tests](../../crates/sqlite/tests), including protocol05 suites, query, prerequisites, store and stream admission |
+| Server | [server tests](../../crates/server/tests) for admission and finite plans |
+| Simulation | [scenario05](../../crates/sim/tests/scenario05.rs), [protocol05_coverage](../../crates/sim/tests/protocol05_coverage.rs), [mutation_versions05](../../crates/sim/tests/mutation_versions05.rs) |
+| Persistence | [PostgreSQL suite](../../integration/persistence/server), with driver boundaries described in [persistence evidence](testing/integration/persistence.md) |
+| Joined native transport and capacity | [v05-sdk](../../integration/v05-sdk/README.md) |
+| SDK and binding boundaries | [bindings](../../integration/bindings), [generated API](../../integration/generated-api), [Dart tests](../../packages/frontend/dart/test) |
+
+Current evidence pages identify inspected assertions and their limits. Their source inspection on 2026-10-09 is not an execution result. Historical execution records are retained in [history](history/pre-protocol5/README.md).

@@ -19,7 +19,7 @@ Rules the compiler enforces:
 
 Behavior the runtimes give a relation:
 
-- **Cascade (client).** Deleting a record deletes every record reachable through relations with `onTargetDelete: delete`, in both the visible and before-image tables, once per record even with cycles. Cascaded deletes are recorded as local effects of the mutation; they are never sent ([Writes](../client/engine/local-operations/writes.md), [Client Pull](../../history/pre-protocol5/architecture/client/engine/pull.md)).
+- **Cascade (client).** Deleting a record deletes every record reachable through relations with `onTargetDelete: delete`, in both the visible and before-image tables, once per record even with cycles. Cascaded deletes are recorded as local effects of the mutation; they are never sent ([Writes](../client/engine/local-operations/writes.md), [Sync](../protocols/sync.md)).
 - **Dependencies.** A queued create of a record another operation references becomes a lifecycle dependency ([Dependencies](../client/engine/push/dependencies.md)).
 - **Navigation.** `related` follows a reference (null when a reference field is null); `referencing` filters the referencing model by the reference fields ([Queries](../client/engine/local-operations/queries.md)).
 

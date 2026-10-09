@@ -7,4 +7,3 @@ The queue owns Mutation lifecycle and final typed outcome. A committed acknowled
 ## 5. Building Block View
 
 [Implementation](../../../../../crates/client/src/settlement05.rs) owns this component. [Protocol 5](../../protocols/sync.md) owns shared context, delivery and settlement rules.
-

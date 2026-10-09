@@ -7,4 +7,3 @@ The Mutation queue retains lifecycle, argument/input paths, local operation orde
 ## 5. Building Block View
 
 [Implementation](../../../../../../crates/client/src/store05.rs) owns this component. [Protocol 5](../../../protocols/sync.md) owns shared context, delivery and settlement rules.
-

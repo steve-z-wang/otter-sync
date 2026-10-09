@@ -7,4 +7,3 @@ Handlers receive authenticated context, typed arguments and the retained transac
 ## 5. Building Block View
 
 [Implementation](../../../../crates/protocols/src/server_bridge/mod.rs) owns this component. [Protocol 5](../protocols/sync.md) owns shared context, delivery and settlement rules.
-

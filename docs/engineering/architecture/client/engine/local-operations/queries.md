@@ -15,7 +15,7 @@ Queries read the visible tables, which already contain the merged view (server t
 | `read_sql` / `session_sql` | SQL text and parameters | rows as objects |
 | `sql_tables` | SQL text | the tables a watched statement reads, by their stored names |
 
-Outside a transaction, reads use the committed reader connection and see the last commit. Inside a transaction they use the writer and see the transaction's own writes ([Frontend interface](../../frontend-interface.md)). Generated model classes in [Typed API](../../../sdks/typed-api/README.md) translate typed calls onto these operations.
+Outside a transaction, reads use the committed reader connection and see the last commit. Inside a transaction they use the writer and see the transaction's own writes ([Frontend interface](../../frontend-interface.md)). Generated model classes in [Typed API](../../../frontend-sdk/api.md) translate typed calls onto these operations.
 
 ## 5. Building Block View
 

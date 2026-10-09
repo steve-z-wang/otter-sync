@@ -34,7 +34,7 @@ Code: source names and list/nullable parsing in [compiler/parse.rs](../../../../
 
 ## 8. Crosscutting Concepts
 
-The same normalization runs wherever a value enters a record: before an operation is queued ([Local operations](../client/engine/local-operations/README.md)), when the server decodes arguments and loader rows ([Server Push](../../history/pre-protocol5/architecture/server/engine/push.md), [Server Pull](../../history/pre-protocol5/architecture/server/engine/pull.md)), and when a received state is applied ([Client Pull](../../history/pre-protocol5/architecture/client/engine/pull.md)). Query ordering compares normalized values: strings by UTF-16 code units, numbers as floating point, nulls first ([Queries](../client/engine/local-operations/queries.md)).
+The same normalization runs wherever a value enters a record: before an operation is queued ([Local operations](../client/engine/local-operations/README.md)), when the server decodes arguments and loader rows ([server execution](../server/protocol5.md), [server delivery](../server/protocol5.md)), and when a received state is applied ([Sync](../protocols/sync.md)). Query ordering compares normalized values: strings by UTF-16 code units, numbers as floating point, nulls first ([Queries](../client/engine/local-operations/queries.md)).
 
 ## 10. Quality Requirements
 

@@ -7,4 +7,3 @@ A Batch has one Store sequence and immutable member order, digest and input. Eac
 ## 5. Building Block View
 
 [mutation_queue.rs](../../../../../../crates/client/src/mutation_queue.rs) owns client membership and freezing; [sync05/uplink.rs](../../../../../../crates/client/src/sync05/uplink.rs) schedules transmission. [mutation_batch.rs](../../../../../../crates/server/src/mutation_batch.rs) owns server execution. [Protocol 5](../../../protocols/sync.md) owns shared context, delivery and settlement rules.
-
